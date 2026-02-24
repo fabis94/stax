@@ -52,6 +52,9 @@ struct SubmitOptions {
     /// Suppress extra output
     #[arg(long)]
     quiet: bool,
+    /// Open the current branch PR in browser after submit
+    #[arg(long, conflicts_with = "no_pr")]
+    open: bool,
     /// Show detailed output
     #[arg(short, long)]
     verbose: bool,
@@ -700,6 +703,7 @@ fn run_submit(submit: SubmitOptions, scope: commands::submit::SubmitScope) -> Re
         submit.labels,
         submit.assignees,
         submit.quiet,
+        submit.open,
         submit.verbose,
         submit.template,
         submit.no_template,

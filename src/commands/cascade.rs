@@ -44,6 +44,7 @@ pub fn run(no_pr: bool, no_submit: bool, auto_stash_pop: bool) -> Result<()> {
             vec![], // labels
             vec![], // assignees
             false,  // quiet
+            false,  // open
             false,  // verbose
             None,   // template
             false,  // no_template

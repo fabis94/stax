@@ -1035,6 +1035,7 @@ stax generate --pr-body --edit                               # Review in editor 
 - `stax downstack submit` - Submit ancestors and current branch
 - `stax submit --yes` - Auto-approve prompts
 - `stax submit --no-pr` - Push branches only, skip PR creation/updates
+- `stax submit --open` - Open the current branch PR in browser after submit (`stax ss --open` / `stax bs --open`)
 - `stax submit --force` - Submit even when restack check fails
 - `stax submit --no-prompt` - Use defaults, skip interactive prompts
 - `stax submit --template <name>` - Use specific template by name (skip picker)

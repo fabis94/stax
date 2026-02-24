@@ -38,6 +38,7 @@ fn test_submit_alias_ss() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("draft"));
+    assert!(stdout.contains("--open"));
     assert!(stdout.contains("reviewers"));
     assert!(stdout.contains("labels"));
     assert!(stdout.contains("assignees"));
@@ -125,6 +126,7 @@ fn test_scoped_submit_subcommand_help_flags() {
         assert!(output.status.success(), "{:?}", args);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("--no-pr"), "Expected --no-pr in {:?}", args);
+        assert!(stdout.contains("--open"), "Expected --open in {:?}", args);
         assert!(stdout.contains("--yes"), "Expected --yes in {:?}", args);
         assert!(
             stdout.contains("--no-prompt"),
@@ -246,6 +248,7 @@ fn fp_parity_bs_branch_submit() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("--no-pr"));
+    assert!(stdout.contains("--open"));
     assert!(stdout.contains("--no-prompt"));
 }
 

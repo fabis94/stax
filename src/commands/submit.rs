@@ -61,6 +61,7 @@ pub fn run(
     labels: Vec<String>,
     assignees: Vec<String>,
     quiet: bool,
+    open: bool,
     verbose: bool,
     template: Option<String>,
     no_template: bool,
@@ -751,7 +752,7 @@ pub fn run(
     let rt = rt.context("Internal error: missing runtime for PR submission")?;
     let client = client.context("Internal error: missing GitHub client for PR submission")?;
 
-    rt.block_on(async {
+    let open_pr_url = rt.block_on(async {
         let mut pr_infos: Vec<StackPrInfo> = Vec::new();
 
         for plan in &plans {
@@ -889,8 +890,31 @@ pub fn run(
             }
         }
 
-        Ok::<(), anyhow::Error>(())
+        let open_pr_url = if open {
+            pr_infos
+                .iter()
+                .find(|pr_info| pr_info.branch == current)
+                .and_then(|pr_info| pr_info.pr_number)
+                .map(|num| remote_info.pr_url(num))
+        } else {
+            None
+        };
+
+        Ok::<Option<String>, anyhow::Error>(open_pr_url)
     })?;
+
+    if let Some(pr_url) = open_pr_url {
+        if !quiet {
+            println!("Opening {} in browser...", pr_url.cyan());
+        }
+        open_in_browser(&pr_url);
+    } else if open && !quiet {
+        eprintln!(
+            "  {} No PR found for current branch {}; nothing to open.",
+            "!".yellow(),
+            current.cyan()
+        );
+    }
 
     // Finish transaction successfully
     if let Some(tx) = tx {
@@ -913,6 +937,23 @@ fn push_branch(workdir: &std::path::Path, remote: &str, branch: &str) -> Result<
         anyhow::bail!("Failed to push branch {}", branch);
     }
     Ok(())
+}
+
+fn open_in_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open").arg(url).spawn().ok();
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        Command::new("xdg-open").arg(url).spawn().ok();
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd").args(["/c", "start", url]).spawn().ok();
+    }
 }
 
 fn resolve_branches_for_scope(stack: &Stack, current: &str, scope: SubmitScope) -> Vec<String> {
