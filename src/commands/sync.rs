@@ -1,4 +1,3 @@
-use crate::cache::CiCache;
 use crate::commands::ci::{fetch_ci_statuses, record_ci_history};
 use crate::config::Config;
 use crate::engine::{BranchMetadata, Stack};
@@ -12,10 +11,12 @@ use colored::Colorize;
 use dialoguer::{theme::ColorfulTheme, Confirm};
 use std::io::Write;
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 /// Sync repo: pull trunk from remote, delete merged branches, optionally restack
 pub fn run(
     restack: bool,
+    prune: bool,
     delete_merged: bool,
     force: bool,
     safe: bool,
@@ -24,12 +25,16 @@ pub fn run(
     verbose: bool,
     auto_stash_pop: bool,
 ) -> Result<()> {
+    let sync_started_at = Instant::now();
+    let mut step_timings: Vec<(String, Duration)> = Vec::new();
+
     let repo = GitRepo::open()?;
     let stack = Stack::load(&repo)?;
     let current = repo.current_branch()?;
     let workdir = repo.workdir()?;
     let config = Config::load()?;
     let remote_name = config.remote_name().to_string();
+    let remote_trunk_ref = format!("{}/{}", remote_name, stack.trunk);
 
     if r#continue {
         crate::commands::continue_cmd::run()?;
@@ -55,7 +60,9 @@ pub fn run(
         };
 
         if stash {
+            let stash_started_at = Instant::now();
             stashed = repo.stash_push()?;
+            step_timings.push(("stash working tree".to_string(), stash_started_at.elapsed()));
             if !quiet {
                 println!("{}", "✓ Stashed working tree changes.".green());
             }
@@ -75,11 +82,18 @@ pub fn run(
         let _ = std::io::stdout().flush();
     }
 
+    let fetch_started_at = Instant::now();
+    let fetch_args: Vec<&str> = if prune {
+        vec!["fetch", "--prune", "--no-tags", &remote_name]
+    } else {
+        vec!["fetch", "--no-tags", &remote_name]
+    };
     let output = Command::new("git")
-        .args(["fetch", &remote_name])
+        .args(&fetch_args)
         .current_dir(workdir)
         .output()
         .context("Failed to fetch")?;
+    step_timings.push((format!("fetch {}", remote_name), fetch_started_at.elapsed()));
 
     if !quiet {
         if output.status.success() {
@@ -111,6 +125,7 @@ pub fn run(
     // has diverged. This is fine - we'll retry after branch deletions if we end up on trunk.
     let was_on_trunk = current == stack.trunk;
     let mut trunk_update_deferred = false;
+    let update_trunk_started_at = Instant::now();
 
     if was_on_trunk {
         // We're on trunk - pull directly
@@ -120,10 +135,10 @@ pub fn run(
         }
 
         let output = Command::new("git")
-            .args(["pull", "--ff-only", &remote_name, &stack.trunk])
+            .args(["merge", "--ff-only", &remote_trunk_ref])
             .current_dir(workdir)
             .output()
-            .context("Failed to pull trunk")?;
+            .context("Failed to fast-forward trunk")?;
 
         if output.status.success() {
             if !quiet {
@@ -152,11 +167,7 @@ pub fn run(
         } else {
             // Try reset to remote
             let reset_output = Command::new("git")
-                .args([
-                    "reset",
-                    "--hard",
-                    &format!("{}/{}", remote_name, stack.trunk),
-                ])
+                .args(["reset", "--hard", &remote_trunk_ref])
                 .current_dir(workdir)
                 .output()
                 .context("Failed to reset trunk")?;
@@ -185,10 +196,10 @@ pub fn run(
 
         if let Some(trunk_worktree_path) = repo.branch_worktree_path(&stack.trunk)? {
             let output = Command::new("git")
-                .args(["pull", "--ff-only", &remote_name, &stack.trunk])
+                .args(["merge", "--ff-only", &remote_trunk_ref])
                 .current_dir(&trunk_worktree_path)
                 .output()
-                .context("Failed to pull trunk in its worktree")?;
+                .context("Failed to fast-forward trunk in its worktree")?;
 
             if output.status.success() {
                 if !quiet {
@@ -208,11 +219,7 @@ pub fn run(
                 }
             } else {
                 let reset_output = Command::new("git")
-                    .args([
-                        "reset",
-                        "--hard",
-                        &format!("{}/{}", remote_name, stack.trunk),
-                    ])
+                    .args(["reset", "--hard", &remote_trunk_ref])
                     .current_dir(&trunk_worktree_path)
                     .output()
                     .context("Failed to reset trunk in its worktree")?;
@@ -234,20 +241,40 @@ pub fn run(
                 }
             }
         } else {
-            // Trunk isn't checked out in any worktree; update via refspec fetch.
-            let output = Command::new("git")
+            // Trunk isn't checked out in any worktree; fast-forward local trunk ref
+            // directly from the already-fetched remote-tracking branch.
+            let ff_possible = Command::new("git")
                 .args([
-                    "fetch",
-                    &remote_name,
-                    &format!("{}:{}", stack.trunk, stack.trunk),
+                    "merge-base",
+                    "--is-ancestor",
+                    &stack.trunk,
+                    &remote_trunk_ref,
                 ])
                 .current_dir(workdir)
-                .output()
-                .context("Failed to update trunk")?;
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false);
 
-            if output.status.success() {
-                if !quiet {
-                    println!("{}", "done".green());
+            if ff_possible {
+                let output = Command::new("git")
+                    .args([
+                        "update-ref",
+                        &format!("refs/heads/{}", stack.trunk),
+                        &format!("refs/remotes/{}/{}", remote_name, stack.trunk),
+                    ])
+                    .current_dir(workdir)
+                    .output()
+                    .context("Failed to fast-forward local trunk ref")?;
+
+                if output.status.success() {
+                    if !quiet {
+                        println!("{}", "done".green());
+                    }
+                } else {
+                    trunk_update_deferred = true;
+                    if !quiet {
+                        println!("{}", "deferred".dimmed());
+                    }
                 }
             } else {
                 // Defer trunk update - we'll retry after branch deletions if we end up on trunk
@@ -258,10 +285,21 @@ pub fn run(
             }
         }
     }
+    step_timings.push((
+        format!("update {}", stack.trunk),
+        update_trunk_started_at.elapsed(),
+    ));
 
     // 3. Delete merged branches
     if delete_merged {
+        let detect_merged_started_at = Instant::now();
         let merged = find_merged_branches(workdir, &stack, &remote_name)?;
+        step_timings.push((
+            "detect merged branches".to_string(),
+            detect_merged_started_at.elapsed(),
+        ));
+
+        let delete_merged_started_at = Instant::now();
 
         // Lazy-initialize GitHub client for updating PR bases (only if needed)
         let github_client: Option<(tokio::runtime::Runtime, GitHubClient)> = {
@@ -539,6 +577,11 @@ pub fn run(
         } else if !quiet {
             println!("  {}", "No merged branches to delete.".dimmed());
         }
+
+        step_timings.push((
+            "delete merged branches".to_string(),
+            delete_merged_started_at.elapsed(),
+        ));
     }
 
     // Re-check current branch since it may have changed during branch deletion
@@ -547,16 +590,17 @@ pub fn run(
     // If we deferred trunk update (refspec fetch failed while not on trunk) and we're
     // now on trunk after branch deletions, retry with git pull which is more reliable
     if trunk_update_deferred && current_after_deletions == stack.trunk {
+        let deferred_update_started_at = Instant::now();
         if !quiet {
             print!("  Updating {}... ", stack.trunk.cyan());
             let _ = std::io::stdout().flush();
         }
 
         let output = Command::new("git")
-            .args(["pull", "--ff-only", &remote_name, &stack.trunk])
+            .args(["merge", "--ff-only", &remote_trunk_ref])
             .current_dir(workdir)
             .output()
-            .context("Failed to pull trunk")?;
+            .context("Failed to fast-forward trunk")?;
 
         if output.status.success() {
             if !quiet {
@@ -585,11 +629,7 @@ pub fn run(
         } else {
             // Try reset to remote
             let reset_output = Command::new("git")
-                .args([
-                    "reset",
-                    "--hard",
-                    &format!("{}/{}", remote_name, stack.trunk),
-                ])
+                .args(["reset", "--hard", &remote_trunk_ref])
                 .current_dir(workdir)
                 .output()
                 .context("Failed to reset trunk")?;
@@ -610,10 +650,16 @@ pub fn run(
                 }
             }
         }
+
+        step_timings.push((
+            format!("retry update {}", stack.trunk),
+            deferred_update_started_at.elapsed(),
+        ));
     }
 
     // 4. Optionally restack
     if restack {
+        let restack_started_at = Instant::now();
         if !quiet {
             println!();
             println!("{}", "Restacking...".bold());
@@ -734,19 +780,31 @@ pub fn run(
                 }
             }
         }
+
+        step_timings.push(("restack".to_string(), restack_started_at.elapsed()));
     }
 
     if stashed {
+        let stash_pop_started_at = Instant::now();
         repo.stash_pop()?;
+        step_timings.push(("restore stash".to_string(), stash_pop_started_at.elapsed()));
         if !quiet {
             println!("{}", "✓ Restored stashed changes.".green());
         }
     }
 
-    // Refresh CI cache in background (non-blocking for user experience)
-    let git_dir = repo.git_dir()?;
-    let branches: Vec<String> = stack.branches.keys().cloned().collect();
-    refresh_ci_cache(&repo, &config, &stack, &branches, git_dir);
+    if verbose && !quiet {
+        println!();
+        println!("{}", "Sync timing summary:".bold());
+        for (step, duration) in &step_timings {
+            println!("  {:<30} {}", step, format_duration(*duration));
+        }
+        println!(
+            "  {:<30} {}",
+            "total",
+            format_duration(sync_started_at.elapsed()).cyan()
+        );
+    }
 
     if !quiet {
         println!();
@@ -833,7 +891,8 @@ fn find_merged_branches(
         }
     }
 
-    // Method 3: Check if branch has empty diff against trunk (catches squash/rebase merges)
+    // Method 3: Check if branch has empty diff against origin/trunk
+    // (catches squash/rebase merges and avoids local-trunk drift issues).
     // First get list of local branches to avoid diffing non-existent branches
     let local_output = Command::new("git")
         .args(["branch", "--format=%(refname:short)"])
@@ -847,64 +906,62 @@ fn find_merged_branches(
             .map(|s| s.trim().to_string())
             .collect();
 
-    for branch in stack.branches.keys() {
-        // Skip trunk
-        if branch == &stack.trunk {
-            continue;
-        }
+    let diff_candidates: Vec<String> = stack
+        .branches
+        .keys()
+        .filter(|branch| {
+            *branch != &stack.trunk && !merged.contains(*branch) && local_branches.contains(*branch)
+        })
+        .cloned()
+        .collect();
 
-        // Skip if already in merged list
-        if merged.contains(branch) {
-            continue;
-        }
+    let worker_count = std::thread::available_parallelism()
+        .map(|n| n.get().min(8))
+        .unwrap_or(1);
 
-        // Skip if branch doesn't exist locally (will be caught by orphan check)
-        if !local_branches.contains(branch) {
-            continue;
-        }
+    if worker_count <= 1 || diff_candidates.len() < 2 {
+        for branch in diff_candidates {
+            let diff_output = Command::new("git")
+                .args(["diff", "--quiet", &remote_trunk_ref, &branch])
+                .current_dir(workdir)
+                .stderr(std::process::Stdio::null())
+                .status();
 
-        // Check if branch has any changes vs trunk
-        let diff_output = Command::new("git")
-            .args(["diff", "--quiet", &stack.trunk, branch])
-            .current_dir(workdir)
-            .stderr(std::process::Stdio::null())
-            .status();
-
-        // --quiet returns 0 if no diff, 1 if there are differences
-        if let Ok(status) = diff_output {
-            if status.success() {
-                // No diff = branch is effectively merged
-                merged.push(branch.clone());
+            if diff_output.map(|s| s.success()).unwrap_or(false) {
+                merged.push(branch);
             }
         }
-    }
+    } else {
+        let chunk_size = (diff_candidates.len() + worker_count - 1) / worker_count;
+        let mut handles = Vec::new();
 
-    // Method 3b: Empty diff against origin/trunk (handles stale/diverged local trunk)
-    for branch in stack.branches.keys() {
-        // Skip trunk
-        if branch == &stack.trunk {
-            continue;
+        for chunk in diff_candidates.chunks(chunk_size) {
+            let chunk_branches = chunk.to_vec();
+            let workdir = workdir.to_path_buf();
+            let remote_trunk_ref = remote_trunk_ref.clone();
+
+            handles.push(std::thread::spawn(move || {
+                let mut chunk_merged = Vec::new();
+
+                for branch in chunk_branches {
+                    let diff_output = Command::new("git")
+                        .args(["diff", "--quiet", &remote_trunk_ref, &branch])
+                        .current_dir(&workdir)
+                        .stderr(std::process::Stdio::null())
+                        .status();
+
+                    if diff_output.map(|s| s.success()).unwrap_or(false) {
+                        chunk_merged.push(branch);
+                    }
+                }
+
+                chunk_merged
+            }));
         }
 
-        // Skip if already in merged list
-        if merged.contains(branch) {
-            continue;
-        }
-
-        // Skip if branch doesn't exist locally (will be caught by orphan check)
-        if !local_branches.contains(branch) {
-            continue;
-        }
-
-        let diff_output = Command::new("git")
-            .args(["diff", "--quiet", &remote_trunk_ref, branch])
-            .current_dir(workdir)
-            .stderr(std::process::Stdio::null())
-            .status();
-
-        if let Ok(status) = diff_output {
-            if status.success() {
-                merged.push(branch.clone());
+        for handle in handles {
+            if let Ok(chunk_merged) = handle.join() {
+                merged.extend(chunk_merged);
             }
         }
     }
@@ -974,70 +1031,6 @@ fn find_merged_branches(
     Ok(merged)
 }
 
-/// Refresh CI cache by fetching latest CI states from GitHub
-fn refresh_ci_cache(
-    repo: &GitRepo,
-    config: &Config,
-    stack: &Stack,
-    branches: &[String],
-    git_dir: &std::path::Path,
-) {
-    let remote_info = match RemoteInfo::from_repo(repo, config) {
-        Ok(info) => info,
-        Err(_) => return,
-    };
-
-    if Config::github_token().is_none() {
-        return;
-    }
-
-    let rt = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(_) => return,
-    };
-
-    let client = match rt.block_on(async {
-        GitHubClient::new(
-            remote_info.owner(),
-            &remote_info.repo,
-            remote_info.api_base_url.clone(),
-        )
-    }) {
-        Ok(client) => client,
-        Err(_) => return,
-    };
-
-    let mut cache = CiCache::load(git_dir);
-
-    for branch in branches {
-        let has_pr = stack
-            .branches
-            .get(branch)
-            .and_then(|b| b.pr_number)
-            .is_some();
-
-        if !has_pr {
-            continue;
-        }
-
-        let sha = match repo.branch_commit(branch) {
-            Ok(sha) => sha,
-            Err(_) => continue,
-        };
-
-        let state = rt
-            .block_on(async { client.combined_status_state(&sha).await })
-            .ok()
-            .flatten();
-
-        cache.update(branch, state, None);
-    }
-
-    cache.mark_refreshed();
-    cache.cleanup(branches);
-    let _ = cache.save(git_dir);
-}
-
 /// Record CI history for merged branches before they are deleted
 fn record_ci_history_for_merged(
     repo: &GitRepo,
@@ -1079,4 +1072,8 @@ fn record_ci_history_for_merged(
             }
         }
     }
+}
+
+fn format_duration(duration: Duration) -> String {
+    format!("{:.3}s", duration.as_secs_f64())
 }
