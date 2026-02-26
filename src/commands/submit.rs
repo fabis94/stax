@@ -285,7 +285,9 @@ pub fn run(
                         timings.open_pr_discovery += lookup_started_at.elapsed();
                     }
 
-                    if found_pr.is_none() && had_metadata_pr {
+                    if found_pr.is_none()
+                        && (had_metadata_pr || remote_branches.contains(branch))
+                    {
                         full_scan_fallbacks += 1;
                         if verbose && !quiet {
                             println!(
@@ -442,7 +444,9 @@ pub fn run(
                         }
                     }
 
-                    if existing_pr.is_none() && had_metadata_pr {
+                    if existing_pr.is_none()
+                        && (had_metadata_pr || remote_branches.contains(branch))
+                    {
                         full_scan_fallbacks += 1;
                         if verbose && !quiet {
                             println!("      Falling back to full open PR scan (metadata mismatch)");
