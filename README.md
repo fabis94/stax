@@ -119,6 +119,36 @@ stax ss
 stax rs --restack
 ```
 
+## Core Commands
+
+| Command | What it does |
+|---------|--------------|
+| `stax` | Launch interactive TUI |
+| `stax ls` | Show your stack with PR status and what needs rebasing |
+| `stax ll` | Show stack with PR URLs and full details |
+| `stax create <name>` | Create a new branch stacked on current |
+| `stax ss` | Submit stack - push all branches and create/update PRs |
+| `stax merge` | Merge PRs from bottom of stack up to current branch |
+| `stax rs` | Repo sync - pull trunk, clean up merged branches |
+| `stax rs --restack` | Sync and rebase all branches onto updated trunk |
+| `stax restack` | Restack current stack (ancestors + current + descendants) |
+| `stax restack --auto-stash-pop` | Restack even when target worktrees are dirty (auto-stash/pop) |
+| `stax rs --restack --auto-stash-pop` | Sync, restack, auto-stash/pop dirty worktrees |
+| `stax cascade` | Restack from bottom, push, and create/update PRs |
+| `stax cascade --no-pr` | Restack and push (skip PR creation/updates) |
+| `stax cascade --no-submit` | Restack only (no remote interaction) |
+| `stax cascade --auto-stash-pop` | Cascade even when target worktrees are dirty (auto-stash/pop) |
+| `stax co` | Interactive branch checkout with fuzzy search |
+| `stax u` / `stax d` | Move up/down the stack |
+| `stax m` | Modify - stage all changes and amend current commit |
+| `stax pr` | Open current branch's PR in browser |
+| `stax open` | Open repository in browser |
+| `stax copy` | Copy branch name to clipboard |
+| `stax copy --pr` | Copy PR URL to clipboard |
+| `stax standup` | Show your recent activity for standups |
+| `stax changelog` | Generate changelog between two refs |
+| `stax undo` | Undo last operation (restack, submit, etc.) |
+
 ## Interactive Branch Creation
 
 Run `stax create` without arguments to launch the guided wizard:
@@ -140,6 +170,60 @@ $ stax create
 
 ✓ Created cesar/auth-validation
   → Stacked on feature/auth
+```
+
+## AI-Powered PR Body Generation
+
+Generate a PR description using AI, based on your diff, commit messages, and the repo's PR template:
+
+```bash
+stax generate --pr-body
+```
+
+stax collects the diff, commit messages, and PR template for the current branch, sends them to an AI agent (Claude, Codex, Gemini CLI, or OpenCode), and updates the PR body on GitHub.
+
+Prerequisites:
+- Current branch must be tracked by stax
+- Current branch must already have a PR (create one with `stax submit` / `stax ss`)
+
+You can also generate during submit:
+
+```bash
+stax submit --ai-body
+```
+
+### First Run
+
+If no AI agent is configured, stax auto-detects what's installed and walks you through setup:
+
+```
+? Select AI agent:
+> claude (default)
+  codex
+  gemini
+  opencode
+
+? Select model for claude:
+> claude-sonnet-4-5-20250929 — Sonnet 4.5 (default, balanced)
+  claude-haiku-4-5-20251001 — Haiku 4.5 (fastest, cheapest)
+  claude-opus-4-6 — Opus 4.6 (most capable)
+
+? Save choices to config? (Y/n): Y
+✓ Saved ai.agent = "claude", ai.model = "claude-sonnet-4-5-20250929"
+```
+
+### Options
+
+- `--agent <name>`: Override the configured agent for this invocation (`claude`, `codex`, `gemini`, `opencode`)
+- `--model <name>`: Override the model (e.g., `claude-haiku-4-5-20251001`, `gpt-4.1-mini`, `gemini-2.5-flash`)
+- `--edit`: Open $EDITOR to review/tweak the generated body before updating the PR
+
+```bash
+stax generate --pr-body --agent codex                        # Use codex this time
+stax generate --pr-body --model claude-haiku-4-5-20251001    # Use a specific model
+stax generate --pr-body --agent gemini --model gemini-2.5-flash
+stax generate --pr-body --agent opencode
+stax generate --pr-body --edit                               # Review in editor first
 ```
 
 ## Interactive TUI
@@ -227,36 +311,6 @@ main                       main
 ```
 
 Split uses the transaction system, so you can `stax undo` if needed.
-
-## Core Commands
-
-| Command | What it does |
-|---------|--------------|
-| `stax` | Launch interactive TUI |
-| `stax ls` | Show your stack with PR status and what needs rebasing |
-| `stax ll` | Show stack with PR URLs and full details |
-| `stax create <name>` | Create a new branch stacked on current |
-| `stax ss` | Submit stack - push all branches and create/update PRs |
-| `stax merge` | Merge PRs from bottom of stack up to current branch |
-| `stax rs` | Repo sync - pull trunk, clean up merged branches |
-| `stax rs --restack` | Sync and rebase all branches onto updated trunk |
-| `stax restack` | Restack current stack (ancestors + current + descendants) |
-| `stax restack --auto-stash-pop` | Restack even when target worktrees are dirty (auto-stash/pop) |
-| `stax rs --restack --auto-stash-pop` | Sync, restack, auto-stash/pop dirty worktrees |
-| `stax cascade` | Restack from bottom, push, and create/update PRs |
-| `stax cascade --no-pr` | Restack and push (skip PR creation/updates) |
-| `stax cascade --no-submit` | Restack only (no remote interaction) |
-| `stax cascade --auto-stash-pop` | Cascade even when target worktrees are dirty (auto-stash/pop) |
-| `stax co` | Interactive branch checkout with fuzzy search |
-| `stax u` / `stax d` | Move up/down the stack |
-| `stax m` | Modify - stage all changes and amend current commit |
-| `stax pr` | Open current branch's PR in browser |
-| `stax open` | Open repository in browser |
-| `stax copy` | Copy branch name to clipboard |
-| `stax copy --pr` | Copy PR URL to clipboard |
-| `stax standup` | Show your recent activity for standups |
-| `stax changelog` | Generate changelog between two refs |
-| `stax undo` | Undo last operation (restack, submit, etc.) |
 
 ## Standup Summary
 
@@ -667,56 +721,38 @@ stax config  # Show config path and current settings
 Config at `~/.config/stax/config.toml`:
 
 ```toml
-# ~/.config/stax/config.toml — full reference with defaults
+# ~/.config/stax/config.toml
+# Created automatically on first run with these defaults:
 
 [branch]
-# DEPRECATED: Use `format` instead. Auto-prefix for branches.
-# prefix = "cesar/"
-
-# Branch name format template. Placeholders: {user}, {date}, {message}
-# format = "{user}/{date}/{message}"
-
-# Username for branch naming (default: git config user.name)
-# user = "cesar"
-
-# Date format for {date} placeholder (default: "%m-%d")
-# Uses chrono strftime: %Y=year, %m=month, %d=day
-# date_format = "%m-%d"
-
-# Character to replace spaces and special chars (default: "-")
-# replacement = "-"
+date_format = "%m-%d"
+replacement = "-"
 
 [remote]
-# Git remote name (default: "origin")
-# name = "origin"
-
-# Base web URL for GitHub (default: "https://github.com")
-# base_url = "https://github.com"
-
-# API base URL for GitHub Enterprise
-# api_base_url = "https://github.company.com/api/v3"
-
-[auth]
-# Use `gh auth token` as a fallback auth source (default: true)
-# use_gh_cli = true
-
-# Allow ambient GITHUB_TOKEN env var (default: false)
-# allow_github_token_env = false
-
-# Optional hostname for gh auth token (GitHub Enterprise)
-# gh_hostname = "github.company.com"
+name = "origin"
+base_url = "https://github.com"
 
 [ui]
-# Show contextual tips/suggestions (default: true)
-# tips = true
+tips = true
+
+[auth]
+use_gh_cli = true
+allow_github_token_env = false
 
 [ai]
-# AI agent for PR body generation: "claude", "codex", "gemini", or "opencode"
-# If not set, stax auto-detects installed agents and prompts on first use
-# agent = "claude"
-
-# Model to use with the AI agent (default: agent's own default)
+# agent = "claude" # or: "codex" / "gemini" / "opencode"
 # model = "claude-sonnet-4-5-20250929"
+
+# Common overrides you can enable later:
+# [branch]
+# format = "{user}/{date}/{message}"
+# user = "cesar"
+#
+# [remote]
+# api_base_url = "https://github.company.com/api/v3"
+#
+# [auth]
+# gh_hostname = "github.company.com"
 ```
 
 ### Branch Name Format
@@ -730,7 +766,7 @@ user = "cesar"                        # Optional: defaults to git config user.na
 date_format = "%m-%d"                 # Optional: chrono strftime (default: "%m-%d")
 ```
 
-Empty placeholders are cleaned up automatically. The legacy `prefix` field still works if `format` is not set.
+Empty placeholders are cleaned up automatically.
 
 ### GitHub Authentication
 
@@ -883,60 +919,6 @@ stax submit
 stax submit --template bugfix  # Use bugfix.md directly
 stax submit --no-template      # Empty body
 stax submit --edit             # Force editor open
-```
-
-## AI-Powered PR Body Generation
-
-Generate a PR description using AI, based on your diff, commit messages, and the repo's PR template:
-
-```bash
-stax generate --pr-body
-```
-
-stax collects the diff, commit messages, and PR template for the current branch, sends them to an AI agent (Claude, Codex, Gemini CLI, or OpenCode), and updates the PR body on GitHub.
-
-Prerequisites:
-- Current branch must be tracked by stax
-- Current branch must already have a PR (create one with `stax submit` / `stax ss`)
-
-You can also generate during submit:
-
-```bash
-stax submit --ai-body
-```
-
-### First Run
-
-If no AI agent is configured, stax auto-detects what's installed and walks you through setup:
-
-```
-? Select AI agent:
-> claude (default)
-  codex
-  gemini
-  opencode
-
-? Select model for claude:
-> claude-sonnet-4-5-20250929 — Sonnet 4.5 (default, balanced)
-  claude-haiku-4-5-20251001 — Haiku 4.5 (fastest, cheapest)
-  claude-opus-4-6 — Opus 4.6 (most capable)
-
-? Save choices to config? (Y/n): Y
-✓ Saved ai.agent = "claude", ai.model = "claude-sonnet-4-5-20250929"
-```
-
-### Options
-
-- `--agent <name>`: Override the configured agent for this invocation (`claude`, `codex`, `gemini`, `opencode`)
-- `--model <name>`: Override the model (e.g., `claude-haiku-4-5-20251001`, `gpt-4.1-mini`, `gemini-2.5-flash`)
-- `--edit`: Open $EDITOR to review/tweak the generated body before updating the PR
-
-```bash
-stax generate --pr-body --agent codex                        # Use codex this time
-stax generate --pr-body --model claude-haiku-4-5-20251001    # Use a specific model
-stax generate --pr-body --agent gemini --model gemini-2.5-flash
-stax generate --pr-body --agent opencode
-stax generate --pr-body --edit                               # Review in editor first
 ```
 
 ## All Commands
