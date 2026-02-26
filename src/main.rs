@@ -376,9 +376,12 @@ enum Commands {
 
     /// Show CI status for all branches in the stack
     Ci {
-        /// Show all stacks
+        /// Show all tracked branches (not just current stack)
         #[arg(long)]
         all: bool,
+        /// Show all branches in the current stack (not just current branch)
+        #[arg(long, short)]
+        stack: bool,
         /// Output JSON for scripting
         #[arg(long)]
         json: bool,
@@ -391,6 +394,9 @@ enum Commands {
         /// Polling interval in seconds (default: 15)
         #[arg(long, default_value = "15")]
         interval: u64,
+        /// Show compact summary cards instead of the full per-check table
+        #[arg(long, short)]
+        verbose: bool,
     },
 
     /// Split the current branch into multiple stacked branches (interactive)
@@ -882,11 +888,13 @@ fn main() -> Result<()> {
         Commands::Comments { plain } => commands::comments::run(plain),
         Commands::Ci {
             all,
+            stack,
             json,
             refresh,
             watch,
             interval,
-        } => commands::ci::run(all, json, refresh, watch, interval),
+            verbose,
+        } => commands::ci::run(all, stack, json, refresh, watch, interval, verbose),
         Commands::Split => commands::split::run(),
         Commands::Copy { pr } => {
             let target = if pr {
