@@ -15,6 +15,16 @@
   <img src="assets/screenshot.png" width="900" alt="stax screenshot">
 </div>
 
+## Feature Highlights
+
+- [`stax merge`](#cascade-stack-merge) - Cascade-merge your stack from bottom -> current with CI/rebase-aware safety checks.
+- [`stax generate --pr-body`](#ai-powered-pr-body-generation) - Generate polished PR descriptions with AI from your branch diff and context.
+- [`stax standup`](#standup-summary) - Get a quick summary of recent PRs, pushes, and activity for daily standups.
+- [`stax ss`](#core-commands) - Submit or update the full PR stack with correct parent/child base relationships.
+- [`stax rs --restack`](#core-commands) - Sync trunk and restack descendants so your branch tree stays clean and current.
+- [`Interactive TUI`](#interactive-tui) - Browse your stack tree, PR status, diffs, and reorder branches visually.
+- [`stax undo` / `stax redo`](#safe-history-rewriting-with-undo) - Recover safely from restacks and rebases with transactional history snapshots.
+
 ## What are Stacked Branches?
 
 Instead of one massive PR with 50 files, stacked branches let you split work into small, reviewable pieces that build on each other (and visualize it as a tree).
