@@ -195,33 +195,38 @@ fn render_progress_bar(pct: u8, width: usize) -> String {
 }
 
 /// Format the timing footer line for compact and verbose displays
-fn format_timing_footer(timing: &BranchTiming) -> String {
+fn format_timing_footer(timing: &BranchTiming, overall_status: Option<&str>) -> String {
     let elapsed_str = format_duration(timing.elapsed_secs);
 
     if timing.is_complete {
-        match timing.average_secs {
-            Some(avg) => format!("⏱  {}  (avg: {})", elapsed_str, format_duration(avg)),
-            None => format!("⏱  {}", elapsed_str),
+        let avg_str = timing
+            .average_secs
+            .map(|avg| format!("  (avg: {})", format_duration(avg)))
+            .unwrap_or_default();
+        match overall_status {
+            Some("success") => format!("{}  {}{}", "passed".green().bold(), elapsed_str, avg_str),
+            Some("failure") => format!("{}  {}{}", "failed".red().bold(), elapsed_str, avg_str),
+            _ => format!("done  {}{}", elapsed_str, avg_str),
         }
     } else {
         match (timing.average_secs, timing.pct) {
             (Some(avg), Some(pct)) => {
                 let bar = render_progress_bar(pct, 10);
                 let eta = if timing.elapsed_secs >= avg {
-                    "overdue".to_string()
+                    "overdue".yellow().to_string()
                 } else {
                     format!("~{} left", format_duration(avg - timing.elapsed_secs))
                 };
                 format!(
-                    "{} {}%  ⏱  {} elapsed  {}  (avg: {})",
+                    "{}  {}  {}%  {}  elapsed  {}",
+                    "running".yellow().bold(),
                     bar,
                     pct,
                     elapsed_str,
-                    eta,
-                    format_duration(avg)
+                    eta
                 )
             }
-            _ => format!("⏱  {} elapsed", elapsed_str),
+            _ => format!("{}  {} elapsed", "running".yellow().bold(), elapsed_str),
         }
     }
 }
@@ -525,7 +530,7 @@ fn display_branch_compact(repo: &GitRepo, status: &BranchCiStatus, is_current: b
     // Timing / ETA footer
     if let Some(timing) = calculate_branch_timing(repo, &status.branch, &status.check_runs) {
         println!();
-        println!("  {}", format_timing_footer(&timing).cyan());
+        println!("  {}", format_timing_footer(&timing, status.overall_status.as_deref()));
     }
 
     println!();
@@ -671,7 +676,7 @@ fn display_branch_verbose(repo: &GitRepo, status: &BranchCiStatus, is_current: b
     // Timing / ETA footer
     if let Some(timing) = calculate_branch_timing(repo, &status.branch, &status.check_runs) {
         println!();
-        println!("  {}", format_timing_footer(&timing).cyan());
+        println!("  {}", format_timing_footer(&timing, status.overall_status.as_deref()));
     }
 
     println!();
