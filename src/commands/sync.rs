@@ -365,12 +365,42 @@ pub fn run(
             for branch in &merged {
                 let is_current_branch = branch == &current;
 
-                // Get parent branch for context
-                let parent_branch = stack
+                // Resolve parent branch for checkout/reparent.
+                // Metadata can reference a deleted branch; in that case fall back to trunk.
+                let recorded_parent_branch = stack
                     .branches
                     .get(branch)
                     .and_then(|b| b.parent.clone())
                     .unwrap_or_else(|| stack.trunk.clone());
+                let (parent_branch, parent_fallback_from) =
+                    resolve_effective_parent(workdir, &recorded_parent_branch, &stack.trunk);
+                let parent_exists_locally = local_branch_exists(workdir, &parent_branch);
+
+                if !quiet {
+                    if let Some(missing_parent) = &parent_fallback_from {
+                        println!(
+                            "    {} parent {} not found locally; using {}",
+                            "↪".yellow(),
+                            missing_parent.yellow(),
+                            parent_branch.cyan()
+                        );
+                    }
+                }
+
+                if !parent_exists_locally {
+                    if !quiet {
+                        println!(
+                            "    {} {}",
+                            branch.bright_black(),
+                            format!(
+                                "couldn't resolve a local parent branch (wanted '{}'), skipping",
+                                parent_branch
+                            )
+                            .red()
+                        );
+                    }
+                    continue;
+                }
 
                 let prompt = if is_current_branch {
                     format!("Delete '{}' and checkout '{}'?", branch, parent_branch)
@@ -426,7 +456,8 @@ pub fn run(
                                 println!(
                                     "    {} {}",
                                     branch.bright_black(),
-                                    "failed to checkout parent, skipping".red()
+                                    format!("failed to checkout '{}', skipping", parent_branch)
+                                        .red()
                                 );
                             }
                             continue;
@@ -1036,6 +1067,32 @@ fn find_merged_branches(
     }
 
     Ok(merged)
+}
+
+fn local_branch_exists(workdir: &std::path::Path, branch: &str) -> bool {
+    let local_ref = format!("refs/heads/{}", branch);
+    Command::new("git")
+        .args(["show-ref", "--verify", "--quiet", &local_ref])
+        .current_dir(workdir)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn resolve_effective_parent(
+    workdir: &std::path::Path,
+    recorded_parent: &str,
+    trunk: &str,
+) -> (String, Option<String>) {
+    if local_branch_exists(workdir, recorded_parent) {
+        return (recorded_parent.to_string(), None);
+    }
+
+    if recorded_parent != trunk && local_branch_exists(workdir, trunk) {
+        return (trunk.to_string(), Some(recorded_parent.to_string()));
+    }
+
+    (recorded_parent.to_string(), None)
 }
 
 /// Record CI history for merged branches before they are deleted

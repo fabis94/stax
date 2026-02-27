@@ -227,55 +227,54 @@ pub fn run(
                 println!("      {} Already merged", "✓".green());
             }
             merged_prs.push((branch_info.branch.clone(), pr_number));
-            continue;
-        }
-
-        // Wait for CI and approval if needed
-        if !no_wait {
-            match wait_for_pr_ready(&rt, &client, pr_number, timeout, quiet)? {
-                WaitResult::Ready => {}
-                WaitResult::Failed(reason) => {
-                    failed_pr = Some((branch_info.branch.clone(), pr_number, reason));
-                    break;
+        } else {
+            // Wait for CI and approval if needed
+            if !no_wait {
+                match wait_for_pr_ready(&rt, &client, pr_number, timeout, quiet)? {
+                    WaitResult::Ready => {}
+                    WaitResult::Failed(reason) => {
+                        failed_pr = Some((branch_info.branch.clone(), pr_number, reason));
+                        break;
+                    }
+                    WaitResult::Timeout => {
+                        failed_pr = Some((
+                            branch_info.branch.clone(),
+                            pr_number,
+                            "Timeout waiting for CI".to_string(),
+                        ));
+                        break;
+                    }
                 }
-                WaitResult::Timeout => {
+            } else {
+                // Check if ready without waiting
+                let status = rt.block_on(async { client.get_pr_merge_status(pr_number).await })?;
+                if !status.is_ready() {
                     failed_pr = Some((
                         branch_info.branch.clone(),
                         pr_number,
-                        "Timeout waiting for CI".to_string(),
+                        format!("PR not ready: {}", status.status_text()),
                     ));
                     break;
                 }
             }
-        } else {
-            // Check if ready without waiting
-            let status = rt.block_on(async { client.get_pr_merge_status(pr_number).await })?;
-            if !status.is_ready() {
-                failed_pr = Some((
-                    branch_info.branch.clone(),
-                    pr_number,
-                    format!("PR not ready: {}", status.status_text()),
-                ));
-                break;
-            }
-        }
 
-        // Merge the PR
-        let merge_timer =
-            LiveTimer::maybe_new(!quiet, &format!("Merging ({})...", method.as_str()));
+            // Merge the PR
+            let merge_timer =
+                LiveTimer::maybe_new(!quiet, &format!("Merging ({})...", method.as_str()));
 
-        match rt.block_on(async { client.merge_pr(pr_number, method, None, None).await }) {
-            Ok(()) => {
-                LiveTimer::maybe_finish_ok(merge_timer, "done");
-                merged_prs.push((branch_info.branch.clone(), pr_number));
+            match rt.block_on(async { client.merge_pr(pr_number, method, None, None).await }) {
+                Ok(()) => {
+                    LiveTimer::maybe_finish_ok(merge_timer, "done");
+                    merged_prs.push((branch_info.branch.clone(), pr_number));
 
-                // Record CI history for the merged branch
-                record_ci_history_for_branch(&repo, &rt, &client, &stack, &branch_info.branch);
-            }
-            Err(e) => {
-                LiveTimer::maybe_finish_err(merge_timer, "failed");
-                failed_pr = Some((branch_info.branch.clone(), pr_number, e.to_string()));
-                break;
+                    // Record CI history for the merged branch
+                    record_ci_history_for_branch(&repo, &rt, &client, &stack, &branch_info.branch);
+                }
+                Err(e) => {
+                    LiveTimer::maybe_finish_err(merge_timer, "failed");
+                    failed_pr = Some((branch_info.branch.clone(), pr_number, e.to_string()));
+                    break;
+                }
             }
         }
 

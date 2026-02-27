@@ -3145,6 +3145,73 @@ fn test_sync_on_merged_branch_checkouts_parent() {
 }
 
 #[test]
+fn test_sync_on_merged_branch_with_missing_parent_falls_back_to_trunk() {
+    let repo = TestRepo::new_with_remote();
+
+    // Create parent branch
+    repo.run_stax(&["bc", "feature-parent"]);
+    let parent_branch = repo.current_branch();
+    repo.create_file("parent.txt", "parent content");
+    repo.commit("Parent commit");
+    let push_parent = repo.git(&["push", "-u", "origin", &parent_branch]);
+    assert!(
+        push_parent.status.success(),
+        "Failed to push parent branch: {}",
+        TestRepo::stderr(&push_parent)
+    );
+
+    // Create child branch on top of parent
+    repo.run_stax(&["bc", "feature-child"]);
+    let child_branch = repo.current_branch();
+    repo.create_file("child.txt", "child content");
+    repo.commit("Child commit");
+    let push_child = repo.git(&["push", "-u", "origin", &child_branch]);
+    assert!(
+        push_child.status.success(),
+        "Failed to push child branch: {}",
+        TestRepo::stderr(&push_child)
+    );
+
+    // Remove parent branch, leaving child's metadata with a missing parent.
+    let delete_parent_local = repo.git(&["branch", "-D", &parent_branch]);
+    assert!(
+        delete_parent_local.status.success(),
+        "Failed to delete local parent branch: {}",
+        TestRepo::stderr(&delete_parent_local)
+    );
+    let delete_parent_remote = repo.git(&["push", "origin", "--delete", &parent_branch]);
+    assert!(
+        delete_parent_remote.status.success(),
+        "Failed to delete remote parent branch: {}",
+        TestRepo::stderr(&delete_parent_remote)
+    );
+
+    // Mark child branch as merged on remote.
+    repo.merge_branch_on_remote(&child_branch);
+
+    // Stay on child branch so sync has to checkout a parent before deleting it.
+    assert_eq!(repo.current_branch(), child_branch);
+
+    let output = repo.run_stax(&["sync", "--force"]);
+    assert!(
+        output.status.success(),
+        "Sync failed: {}",
+        TestRepo::stderr(&output)
+    );
+
+    // Sync should fall back to trunk and still delete the merged child branch.
+    assert_eq!(
+        repo.current_branch(),
+        "main",
+        "Expected sync to fallback to trunk when parent branch is missing"
+    );
+    assert!(
+        !repo.list_branches().iter().any(|b| b == &child_branch),
+        "Expected merged child branch to be deleted"
+    );
+}
+
+#[test]
 fn test_sync_pulls_parent_after_checkout() {
     let repo = TestRepo::new_with_remote();
 
@@ -4278,6 +4345,341 @@ mod github_mock_tests {
             !metadata.contains("\"number\":99"),
             "Expected PR number not to be persisted for fork, got: {}",
             metadata
+        );
+    }
+
+    #[tokio::test]
+    async fn test_merge_already_merged_pr_still_rebases_next_branch_and_reparents_metadata() {
+        let mock_server = MockServer::start().await;
+
+        // Resolve PRs for both stack branches during merge scope validation.
+        Mock::given(method("GET"))
+            .and(path("/repos/test/repo/pulls"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "url": "https://api.github.com/repos/test/repo/pulls/101",
+                    "id": 101,
+                    "number": 101,
+                    "state": "open",
+                    "draft": false,
+                    "head": { "ref": "merge-a", "sha": "sha-a", "label": "test:merge-a" },
+                    "base": { "ref": "main", "sha": "main-sha" }
+                },
+                {
+                    "url": "https://api.github.com/repos/test/repo/pulls/102",
+                    "id": 102,
+                    "number": 102,
+                    "state": "open",
+                    "draft": false,
+                    "head": { "ref": "merge-b", "sha": "sha-b", "label": "test:merge-b" },
+                    "base": { "ref": "merge-a", "sha": "sha-a" }
+                }
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        // PR #101 is already merged.
+        Mock::given(method("GET"))
+            .and(path("/repos/test/repo/pulls/101"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://api.github.com/repos/test/repo/pulls/101",
+                "id": 101,
+                "number": 101,
+                "state": "closed",
+                "draft": false,
+                "merged_at": "2024-01-01T00:00:00Z",
+                "mergeable": true,
+                "mergeable_state": "clean",
+                "head": { "ref": "merge-a", "sha": "sha-a", "label": "test:merge-a" },
+                "base": { "ref": "main", "sha": "main-sha" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // PR #102 remains open and mergeable.
+        Mock::given(method("GET"))
+            .and(path("/repos/test/repo/pulls/102"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://api.github.com/repos/test/repo/pulls/102",
+                "id": 102,
+                "number": 102,
+                "state": "open",
+                "draft": false,
+                "merged_at": null,
+                "mergeable": true,
+                "mergeable_state": "clean",
+                "head": { "ref": "merge-b", "sha": "sha-b", "label": "test:merge-b" },
+                "base": { "ref": "merge-a", "sha": "sha-a" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // During the "already merged" path, merge must still retarget the next PR to trunk.
+        Mock::given(method("PATCH"))
+            .and(path("/repos/test/repo/pulls/102"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://api.github.com/repos/test/repo/pulls/102",
+                "id": 102,
+                "number": 102,
+                "state": "open",
+                "draft": false,
+                "head": { "ref": "merge-b", "sha": "sha-b", "label": "test:merge-b" },
+                "base": { "ref": "main", "sha": "main-sha" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Merge PR #102 when command reaches the second step.
+        Mock::given(method("PUT"))
+            .and(path("/repos/test/repo/pulls/102/merge"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "sha": "merge-commit",
+                "merged": true,
+                "message": "Pull Request successfully merged"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let home = super::test_tempdir();
+        let repo = TestRepo::new();
+        let _remote_root = setup_fake_github_remote(&repo, home.path());
+        write_test_config(home.path(), &mock_server.uri());
+
+        let output = run_stax_with_env(&repo, home.path(), &["bc", "merge-a"]);
+        assert!(
+            output.status.success(),
+            "Failed to create merge-a: {}",
+            TestRepo::stderr(&output)
+        );
+        let branch_a = repo.current_branch();
+        repo.create_file("a.txt", "a");
+        repo.commit("A");
+        let push_a = git_with_env(&repo, home.path(), &["push", "-u", "origin", &branch_a]);
+        assert!(
+            push_a.status.success(),
+            "Failed to push merge-a: {}",
+            TestRepo::stderr(&push_a)
+        );
+
+        let output = run_stax_with_env(&repo, home.path(), &["bc", "merge-b"]);
+        assert!(
+            output.status.success(),
+            "Failed to create merge-b: {}",
+            TestRepo::stderr(&output)
+        );
+        let branch_b = repo.current_branch();
+        repo.create_file("b.txt", "b");
+        repo.commit("B");
+        let push_b = git_with_env(&repo, home.path(), &["push", "-u", "origin", &branch_b]);
+        assert!(
+            push_b.status.success(),
+            "Failed to push merge-b: {}",
+            TestRepo::stderr(&push_b)
+        );
+
+        // Start from the top branch so merge scope is [merge-a, merge-b].
+        let merge_output = run_stax_with_env(
+            &repo,
+            home.path(),
+            &["merge", "--yes", "--no-wait", "--no-delete"],
+        );
+        assert!(
+            merge_output.status.success(),
+            "Merge failed: {}\n{}",
+            TestRepo::stderr(&merge_output),
+            TestRepo::stdout(&merge_output)
+        );
+
+        // Verify that branch B metadata was reparented to trunk despite branch A being already merged.
+        let metadata_ref = format!("refs/branch-metadata/{}", branch_b);
+        let metadata_output = repo.git(&["show", &metadata_ref]);
+        assert!(
+            metadata_output.status.success(),
+            "Failed to read branch_b metadata: {}",
+            TestRepo::stderr(&metadata_output)
+        );
+        let metadata = TestRepo::stdout(&metadata_output);
+        assert!(
+            metadata.contains("\"parentBranchName\":\"main\""),
+            "Expected merge-b to be reparented to trunk, metadata was: {}",
+            metadata
+        );
+
+        let merge_stdout = TestRepo::stdout(&merge_output);
+        assert!(
+            merge_stdout.contains("Already merged"),
+            "Expected merge output to include already-merged path. Output:\n{}",
+            merge_stdout
+        );
+    }
+
+    #[tokio::test]
+    async fn test_merge_when_ready_already_merged_pr_still_rebases_next_branch_and_reparents_metadata(
+    ) {
+        let mock_server = MockServer::start().await;
+        let home = super::test_tempdir();
+        let repo = TestRepo::new();
+        let _remote_root = setup_fake_github_remote(&repo, home.path());
+        write_test_config(home.path(), &mock_server.uri());
+
+        let output = run_stax_with_env(&repo, home.path(), &["bc", "mwr-a"]);
+        assert!(
+            output.status.success(),
+            "Failed to create mwr-a: {}",
+            TestRepo::stderr(&output)
+        );
+        let branch_a = repo.current_branch();
+        repo.create_file("a.txt", "a");
+        repo.commit("A");
+        let push_a = git_with_env(&repo, home.path(), &["push", "-u", "origin", &branch_a]);
+        assert!(
+            push_a.status.success(),
+            "Failed to push mwr-a: {}",
+            TestRepo::stderr(&push_a)
+        );
+
+        let output = run_stax_with_env(&repo, home.path(), &["bc", "mwr-b"]);
+        assert!(
+            output.status.success(),
+            "Failed to create mwr-b: {}",
+            TestRepo::stderr(&output)
+        );
+        let branch_b = repo.current_branch();
+        repo.create_file("b.txt", "b");
+        repo.commit("B");
+        let push_b = git_with_env(&repo, home.path(), &["push", "-u", "origin", &branch_b]);
+        assert!(
+            push_b.status.success(),
+            "Failed to push mwr-b: {}",
+            TestRepo::stderr(&push_b)
+        );
+
+        // Resolve PRs for both stack branches during merge-when-ready scope validation.
+        Mock::given(method("GET"))
+            .and(path("/repos/test/repo/pulls"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "url": "https://api.github.com/repos/test/repo/pulls/201",
+                    "id": 201,
+                    "number": 201,
+                    "state": "open",
+                    "draft": false,
+                    "head": { "ref": branch_a, "sha": "sha-a", "label": "test:mwr-a" },
+                    "base": { "ref": "main", "sha": "main-sha" }
+                },
+                {
+                    "url": "https://api.github.com/repos/test/repo/pulls/202",
+                    "id": 202,
+                    "number": 202,
+                    "state": "open",
+                    "draft": false,
+                    "head": { "ref": branch_b, "sha": "sha-b", "label": "test:mwr-b" },
+                    "base": { "ref": branch_a, "sha": "sha-a" }
+                }
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        // PR #201 is already merged.
+        Mock::given(method("GET"))
+            .and(path("/repos/test/repo/pulls/201"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://api.github.com/repos/test/repo/pulls/201",
+                "id": 201,
+                "number": 201,
+                "state": "closed",
+                "draft": false,
+                "merged_at": "2024-01-01T00:00:00Z",
+                "mergeable": true,
+                "mergeable_state": "clean",
+                "head": { "ref": branch_a, "sha": "sha-a", "label": "test:mwr-a" },
+                "base": { "ref": "main", "sha": "main-sha" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // PR #202 remains open and ready.
+        Mock::given(method("GET"))
+            .and(path("/repos/test/repo/pulls/202"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://api.github.com/repos/test/repo/pulls/202",
+                "id": 202,
+                "number": 202,
+                "state": "open",
+                "draft": false,
+                "merged_at": null,
+                "mergeable": true,
+                "mergeable_state": "clean",
+                "head": { "ref": branch_b, "sha": "sha-b", "label": "test:mwr-b" },
+                "base": { "ref": branch_a, "sha": "sha-a" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // During the already-merged first PR path, next PR base should still be updated.
+        Mock::given(method("PATCH"))
+            .and(path("/repos/test/repo/pulls/202"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://api.github.com/repos/test/repo/pulls/202",
+                "id": 202,
+                "number": 202,
+                "state": "open",
+                "draft": false,
+                "head": { "ref": branch_b, "sha": "sha-b", "label": "test:mwr-b" },
+                "base": { "ref": "main", "sha": "main-sha" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("PUT"))
+            .and(path("/repos/test/repo/pulls/202/merge"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "sha": "merge-commit",
+                "merged": true,
+                "message": "Pull Request successfully merged"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let merge_output = run_stax_with_env(
+            &repo,
+            home.path(),
+            &[
+                "merge-when-ready",
+                "--yes",
+                "--no-delete",
+                "--timeout",
+                "1",
+                "--interval",
+                "1",
+            ],
+        );
+        assert!(
+            merge_output.status.success(),
+            "Merge-when-ready failed: {}\n{}",
+            TestRepo::stderr(&merge_output),
+            TestRepo::stdout(&merge_output)
+        );
+
+        let metadata_ref = format!("refs/branch-metadata/{}", branch_b);
+        let metadata_output = repo.git(&["show", &metadata_ref]);
+        assert!(
+            metadata_output.status.success(),
+            "Failed to read branch_b metadata: {}",
+            TestRepo::stderr(&metadata_output)
+        );
+        let metadata = TestRepo::stdout(&metadata_output);
+        assert!(
+            metadata.contains("\"parentBranchName\":\"main\""),
+            "Expected mwr-b to be reparented to trunk, metadata was: {}",
+            metadata
+        );
+
+        let merge_stdout = TestRepo::stdout(&merge_output);
+        assert!(
+            merge_stdout.contains("Already merged"),
+            "Expected merge-when-ready output to include already-merged path. Output:\n{}",
+            merge_stdout
         );
     }
 
