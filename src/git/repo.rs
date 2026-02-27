@@ -1061,16 +1061,16 @@ Use --auto-stash-pop or stash/commit changes first.",
     ) -> Vec<ConflictPrediction> {
         branches_with_parents
             .iter()
-            .filter_map(|(branch, parent)| {
-                match self.check_rebase_conflicts(branch, parent) {
+            .filter_map(
+                |(branch, parent)| match self.check_rebase_conflicts(branch, parent) {
                     Ok(files) if !files.is_empty() => Some(ConflictPrediction {
                         branch: branch.clone(),
                         onto: parent.clone(),
                         conflicting_files: files,
                     }),
                     _ => None,
-                }
-            })
+                },
+            )
             .collect()
     }
 

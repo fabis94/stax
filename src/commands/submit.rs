@@ -59,6 +59,23 @@ struct SubmitPhaseTimings {
     stack_comment: Duration,
 }
 
+const PR_TYPE_OPTIONS: [&str; 2] = ["Create as draft", "Publish immediately"];
+const PR_TYPE_DEFAULT_INDEX: usize = 0;
+
+fn resolve_is_draft_without_prompt(
+    draft_flag_set: bool,
+    draft: bool,
+    no_prompt: bool,
+) -> Option<bool> {
+    if draft_flag_set {
+        Some(draft)
+    } else if no_prompt {
+        Some(true)
+    } else {
+        None
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     scope: SubmitScope,
@@ -704,18 +721,17 @@ pub fn run(
             };
 
             // Ask about draft vs publish (only if --draft wasn't explicitly set)
-            let is_draft = if draft_flag_set {
-                draft
-            } else if no_prompt {
-                false // default to publish in no-prompt mode
+            let is_draft = if let Some(is_draft) =
+                resolve_is_draft_without_prompt(draft_flag_set, draft, no_prompt)
+            {
+                is_draft
             } else {
-                let options = vec!["Publish immediately", "Create as draft"];
                 let choice = Select::with_theme(&ColorfulTheme::default())
                     .with_prompt("  PR type")
-                    .items(&options)
-                    .default(0)
+                    .items(&PR_TYPE_OPTIONS)
+                    .default(PR_TYPE_DEFAULT_INDEX)
                     .interact()?;
-                choice == 1
+                choice == PR_TYPE_DEFAULT_INDEX
             };
 
             plan.title = Some(title);
@@ -1471,4 +1487,36 @@ fn generate_ai_body(
     let prompt = generate::build_ai_prompt(&diff_stat, &diff, &commits, template);
 
     generate::invoke_ai_agent(&agent, model.as_deref(), &prompt)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_is_draft_without_prompt, PR_TYPE_DEFAULT_INDEX, PR_TYPE_OPTIONS};
+
+    #[test]
+    fn no_prompt_defaults_to_draft() {
+        assert_eq!(
+            resolve_is_draft_without_prompt(false, false, true),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn explicit_draft_flag_still_forces_draft() {
+        assert_eq!(
+            resolve_is_draft_without_prompt(true, true, false),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn explicit_no_draft_flag_still_requires_prompt() {
+        assert_eq!(resolve_is_draft_without_prompt(false, false, false), None);
+    }
+
+    #[test]
+    fn interactive_default_option_is_draft() {
+        assert_eq!(PR_TYPE_DEFAULT_INDEX, 0);
+        assert_eq!(PR_TYPE_OPTIONS[PR_TYPE_DEFAULT_INDEX], "Create as draft");
+    }
 }
