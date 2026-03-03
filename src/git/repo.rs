@@ -350,6 +350,12 @@ impl GitRepo {
         Ok(())
     }
 
+    /// Fetch a remote and return whether the fetch succeeded.
+    pub fn fetch_remote(&self, remote: &str) -> Result<bool> {
+        let output = self.run_git(self.workdir()?, &["fetch", remote])?;
+        Ok(output.status.success())
+    }
+
     fn rebase_with_args_in_path(&self, cwd: &Path, args: &[&str]) -> Result<RebaseResult> {
         let output = self.run_git(cwd, args)?;
         if output.status.success() {
@@ -907,6 +913,30 @@ Use --auto-stash-pop or stash/commit changes first.",
             == branch_commit.id())
     }
 
+    /// Return true when two refs have no content diff.
+    pub fn refs_have_no_diff(&self, left: &str, right: &str) -> Result<bool> {
+        let output = self.run_git(self.workdir()?, &["diff", "--quiet", left, right])?;
+        match output.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                anyhow::bail!("git diff --quiet {} {} failed: {}", left, right, stderr)
+            }
+        }
+    }
+
+    /// Check whether a branch is merged-equivalent to trunk
+    /// (ancestor relationship or empty-diff equivalence).
+    pub fn is_branch_merged_equivalent_to_trunk(&self, branch: &str) -> Result<bool> {
+        if self.is_branch_merged(branch).unwrap_or(false) {
+            return Ok(true);
+        }
+
+        let trunk = self.trunk_branch()?;
+        self.refs_have_no_diff(&trunk, branch)
+    }
+
     /// Check if a branch has a remote tracking branch (origin/<branch>)
     pub fn has_remote(&self, branch: &str) -> bool {
         let remote_name = format!("origin/{}", branch);
@@ -989,7 +1019,10 @@ Use --auto-stash-pop or stash/commit changes first.",
             if branch == trunk || branch == current {
                 continue;
             }
-            if self.is_branch_merged(&branch).unwrap_or(false) {
+            if self
+                .is_branch_merged_equivalent_to_trunk(&branch)
+                .unwrap_or(false)
+            {
                 merged.push(branch);
             }
         }

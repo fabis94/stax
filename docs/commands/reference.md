@@ -8,10 +8,10 @@
 | `stax ll` | | Show stack with PR URLs and full details |
 | `stax log` | `l` | Show stack with commits and PR info |
 | `stax submit` | `ss` | Submit full current stack |
-| `stax merge` | | Merge PRs bottom -> current, then sync local repo (`--no-sync` to skip) |
+| `stax merge` | | Merge PRs bottom -> current with provenance-aware descendant rebases, then sync local repo (`--no-sync` to skip) |
 | `stax merge-when-ready` | `mwr` | Backward-compatible alias for `stax merge --when-ready` |
 | `stax sync` | `rs` | Pull trunk, delete merged branches, preserve child provenance for restack |
-| `stax restack` | | Rebase current branch onto parent (provenance-aware `--onto` when possible) |
+| `stax restack` | | Rebase current branch onto parent; auto-normalize missing/merged-equivalent parents and use provenance-aware `--onto` when possible |
 | `stax cascade` | | Restack from bottom and submit updates |
 | `stax diff` | | Show per-branch diffs vs parent |
 | `stax range-diff` | | Show range-diff for branches needing restack |

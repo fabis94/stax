@@ -1,3 +1,4 @@
+use crate::commands::restack_parent::normalize_scope_parents_for_restack;
 use crate::engine::{BranchMetadata, Stack};
 use crate::git::{GitRepo, RebaseResult};
 use crate::ops::receipt::{OpKind, PlanSummary};
@@ -26,7 +27,7 @@ pub fn run(
 ) -> Result<()> {
     let repo = GitRepo::open()?;
     let current = repo.current_branch()?;
-    let stack = Stack::load(&repo)?;
+    let mut stack = Stack::load(&repo)?;
 
     if r#continue {
         crate::commands::continue_cmd::run()?;
@@ -86,6 +87,11 @@ pub fn run(
                 .cmp(&stack.ancestors(b).len())
                 .then_with(|| a.cmp(b))
         });
+    }
+
+    let normalized = normalize_scope_parents_for_restack(&repo, &scope_branches, quiet)?;
+    if normalized > 0 {
+        stack = Stack::load(&repo)?;
     }
 
     let branches_to_restack = branches_needing_restack(&stack, &scope_branches);
@@ -276,7 +282,7 @@ pub fn run(
     }
 
     // Check for merged branches and offer to delete them
-    cleanup_merged_branches(&repo, quiet)?;
+    cleanup_merged_branches(&repo, quiet, yes)?;
 
     if stashed {
         repo.stash_pop()?;
@@ -312,7 +318,7 @@ fn branches_needing_restack(stack: &Stack, scope: &[String]) -> Vec<String> {
 }
 
 /// Check for merged branches and prompt to delete each one
-fn cleanup_merged_branches(repo: &GitRepo, quiet: bool) -> Result<()> {
+fn cleanup_merged_branches(repo: &GitRepo, quiet: bool, auto_confirm: bool) -> Result<()> {
     if quiet {
         return Ok(());
     }
@@ -339,12 +345,72 @@ fn cleanup_merged_branches(repo: &GitRepo, quiet: bool) -> Result<()> {
     );
 
     for branch in &merged {
-        let confirm = Confirm::with_theme(&ColorfulTheme::default())
-            .with_prompt(format!("Delete '{}'?", branch.yellow()))
-            .default(true)
-            .interact()?;
+        let live_stack = Stack::load(repo)?;
+        let recorded_parent_branch = live_stack
+            .branches
+            .get(branch)
+            .and_then(|b| b.parent.clone())
+            .unwrap_or_else(|| live_stack.trunk.clone());
+        let parent_branch = if repo.branch_commit(&recorded_parent_branch).is_ok() {
+            recorded_parent_branch.clone()
+        } else if recorded_parent_branch != live_stack.trunk
+            && repo.branch_commit(&live_stack.trunk).is_ok()
+        {
+            live_stack.trunk.clone()
+        } else {
+            recorded_parent_branch.clone()
+        };
+
+        let confirm = if auto_confirm {
+            true
+        } else {
+            Confirm::with_theme(&ColorfulTheme::default())
+                .with_prompt(format!("Delete '{}'?", branch.yellow()))
+                .default(true)
+                .interact()?
+        };
 
         if confirm {
+            let children: Vec<String> = live_stack
+                .branches
+                .iter()
+                .filter(|(_, info)| info.parent.as_deref() == Some(branch))
+                .map(|(name, _)| name.clone())
+                .collect();
+
+            if !children.is_empty() && repo.branch_commit(&parent_branch).is_err() {
+                println!(
+                    "  {} {}",
+                    "⚠".yellow(),
+                    format!(
+                        "Skipped deleting {}: couldn't resolve local fallback parent '{}'.",
+                        branch, parent_branch
+                    )
+                    .dimmed()
+                );
+                continue;
+            }
+
+            let merged_branch_tip = repo.branch_commit(branch).ok();
+            for child in &children {
+                if let Some(child_meta) = BranchMetadata::read(repo.inner(), child)? {
+                    let old_parent_boundary = merged_branch_tip
+                        .clone()
+                        .unwrap_or_else(|| child_meta.parent_branch_revision.clone());
+                    let updated_meta = BranchMetadata {
+                        parent_branch_name: parent_branch.clone(),
+                        parent_branch_revision: old_parent_boundary,
+                        ..child_meta
+                    };
+                    updated_meta.write(repo.inner(), child)?;
+                    println!(
+                        "  {} {}",
+                        "↪".cyan(),
+                        format!("Reparented {} → {}", child, parent_branch).dimmed()
+                    );
+                }
+            }
+
             // Delete the branch
             repo.delete_branch(branch, true)?;
 

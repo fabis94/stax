@@ -1,3 +1,4 @@
+use crate::commands::restack_parent::normalize_scope_parents_for_restack;
 use crate::config::Config;
 use crate::engine::{BranchMetadata, Stack};
 use crate::git::{GitRepo, RebaseResult};
@@ -9,13 +10,18 @@ use colored::Colorize;
 pub fn run(auto_stash_pop: bool) -> Result<()> {
     let repo = GitRepo::open()?;
     let current = repo.current_branch()?;
-    let stack = Stack::load(&repo)?;
+    let mut stack = Stack::load(&repo)?;
 
     // Scope is current branch + descendants (excluding trunk); evaluate
     // restack status live per branch while walking this order.
     let mut upstack = vec![current.clone()];
     upstack.extend(stack.descendants(&current));
     upstack.retain(|b| b != &stack.trunk);
+
+    let normalized = normalize_scope_parents_for_restack(&repo, &upstack, false)?;
+    if normalized > 0 {
+        stack = Stack::load(&repo)?;
+    }
 
     let branches_to_restack = branches_needing_restack(&stack, &upstack);
 

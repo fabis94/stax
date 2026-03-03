@@ -1,7 +1,10 @@
 use crate::commands::ci::{fetch_ci_statuses, record_ci_history};
+use crate::commands::merge_rebase::{
+    fetch_remote_for_descendant_rebase, rebase_descendant_onto_remote_trunk_with_provenance,
+};
 use crate::config::Config;
-use crate::engine::{BranchMetadata, Stack};
-use crate::git::GitRepo;
+use crate::engine::Stack;
+use crate::git::{GitRepo, RebaseResult};
 use crate::github::pr::{MergeMethod, PrMergeStatus};
 use crate::github::GitHubClient;
 use crate::ops::receipt::{OpKind, PlanSummary};
@@ -323,13 +326,8 @@ pub fn run(
 
             // Fetch latest from remote
             let fetch_timer = LiveTimer::maybe_new(!quiet, "Fetching latest...");
-            let fetch_output = Command::new("git")
-                .args(["fetch", &remote_info.name])
-                .current_dir(repo.workdir()?)
-                .output()
-                .context("Failed to fetch")?;
-
-            if !fetch_output.status.success() {
+            let fetch_ok = fetch_remote_for_descendant_rebase(&repo, &remote_info.name)?;
+            if !fetch_ok {
                 LiveTimer::maybe_finish_warn(fetch_timer, "warning");
             } else {
                 LiveTimer::maybe_finish_ok(fetch_timer, "done");
@@ -342,28 +340,30 @@ pub fn run(
             );
 
             repo.checkout(&next_branch)?;
+            let rebase_result = rebase_descendant_onto_remote_trunk_with_provenance(
+                &repo,
+                &next_branch,
+                &scope.trunk,
+                &remote_info.name,
+            )?;
+            match rebase_result {
+                RebaseResult::Success => {
+                    LiveTimer::maybe_finish_ok(rebase_timer, "done");
+                }
+                RebaseResult::Conflict => {
+                    // Abort rebase on conflict to preserve existing merge flow behavior.
+                    let _ = Command::new("git")
+                        .args(["rebase", "--abort"])
+                        .current_dir(repo.workdir()?)
+                        .output();
 
-            let rebase_status = Command::new("git")
-                .args(["rebase", &format!("{}/{}", remote_info.name, scope.trunk)])
-                .current_dir(repo.workdir()?)
-                .output()
-                .context("Failed to rebase")?;
-
-            if !rebase_status.status.success() {
-                // Abort rebase on failure
-                let _ = Command::new("git")
-                    .args(["rebase", "--abort"])
-                    .current_dir(repo.workdir()?)
-                    .output();
-
-                LiveTimer::maybe_finish_err(rebase_timer, "conflict");
-                let reason = "Rebase conflict".to_string();
-                branches[idx + 1].status = LandStatus::Failed(reason.clone());
-                failed_pr = Some((next_branch, next_pr, reason));
-                break;
+                    LiveTimer::maybe_finish_err(rebase_timer, "conflict");
+                    let reason = "Rebase conflict".to_string();
+                    branches[idx + 1].status = LandStatus::Failed(reason.clone());
+                    failed_pr = Some((next_branch, next_pr, reason));
+                    break;
+                }
             }
-
-            LiveTimer::maybe_finish_ok(rebase_timer, "done");
 
             // Update PR base to trunk
             let update_base_timer =
@@ -396,20 +396,6 @@ pub fn run(
             }
 
             LiveTimer::maybe_finish_ok(push_timer, "done");
-
-            // Update metadata: parent → trunk
-            if let Some(meta) = BranchMetadata::read(repo.inner(), &next_branch)? {
-                let remote_trunk_ref = format!("{}/{}", remote_info.name, scope.trunk);
-                let trunk_commit = repo
-                    .resolve_ref(&remote_trunk_ref)
-                    .unwrap_or_else(|_| repo.branch_commit(&scope.trunk).unwrap_or_default());
-                let updated_meta = BranchMetadata {
-                    parent_branch_name: scope.trunk.clone(),
-                    parent_branch_revision: trunk_commit,
-                    ..meta
-                };
-                updated_meta.write(repo.inner(), &next_branch)?;
-            }
         }
     }
 
@@ -421,35 +407,30 @@ pub fn run(
         }
 
         for remaining in &remaining_branches {
+            let fetch_timer = LiveTimer::maybe_new(!quiet, "Fetching latest...");
+            let fetch_ok = fetch_remote_for_descendant_rebase(&repo, &remote_info.name)?;
+            if !fetch_ok {
+                LiveTimer::maybe_finish_warn(fetch_timer, "warning");
+            } else {
+                LiveTimer::maybe_finish_ok(fetch_timer, "done");
+            }
+
             let remaining_timer =
                 LiveTimer::maybe_new(!quiet, &format!("Rebasing {}...", remaining.branch));
 
             repo.checkout(&remaining.branch)?;
+            let rebase_result = rebase_descendant_onto_remote_trunk_with_provenance(
+                &repo,
+                &remaining.branch,
+                &scope.trunk,
+                &remote_info.name,
+            );
 
-            let rebase_result = Command::new("git")
-                .args(["rebase", &format!("{}/{}", remote_info.name, scope.trunk)])
-                .current_dir(repo.workdir()?)
-                .output();
-
-            if let Ok(output) = rebase_result {
-                if output.status.success() {
+            match rebase_result {
+                Ok(RebaseResult::Success) => {
                     if let Some(pr_num) = remaining.pr_number {
                         let _ = rt
                             .block_on(async { client.update_pr_base(pr_num, &scope.trunk).await });
-                    }
-
-                    if let Some(meta) = BranchMetadata::read(repo.inner(), &remaining.branch)? {
-                        let remote_trunk_ref = format!("{}/{}", remote_info.name, scope.trunk);
-                        let trunk_commit =
-                            repo.resolve_ref(&remote_trunk_ref).unwrap_or_else(|_| {
-                                repo.branch_commit(&scope.trunk).unwrap_or_default()
-                            });
-                        let updated_meta = BranchMetadata {
-                            parent_branch_name: scope.trunk.clone(),
-                            parent_branch_revision: trunk_commit,
-                            ..meta
-                        };
-                        updated_meta.write(repo.inner(), &remaining.branch)?;
                     }
 
                     let _ = Command::new("git")
@@ -458,15 +439,17 @@ pub fn run(
                         .output();
 
                     LiveTimer::maybe_finish_ok(remaining_timer, "done");
-                } else {
+                }
+                Ok(RebaseResult::Conflict) => {
                     let _ = Command::new("git")
                         .args(["rebase", "--abort"])
                         .current_dir(repo.workdir()?)
                         .output();
                     LiveTimer::maybe_finish_warn(remaining_timer, "conflict (skipped)");
                 }
-            } else {
-                LiveTimer::maybe_finish_err(remaining_timer, "failed");
+                Err(_) => {
+                    LiveTimer::maybe_finish_err(remaining_timer, "failed");
+                }
             }
         }
     }

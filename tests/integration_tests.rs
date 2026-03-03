@@ -1164,6 +1164,172 @@ fn test_restack_after_parent_change() {
 }
 
 #[test]
+fn test_restack_auto_normalizes_squash_merged_parent() {
+    let repo = TestRepo::new();
+
+    // Build stack: main -> parent -> child
+    repo.run_stax(&["bc", "restack-parent"]);
+    let parent = repo.current_branch();
+    repo.create_file("parent.txt", "parent 1\n");
+    repo.commit("Parent commit 1");
+
+    repo.run_stax(&["bc", "restack-child"]);
+    let child = repo.current_branch();
+    repo.create_file("child.txt", "child change\n");
+    repo.commit("Child commit");
+
+    // Squash-merge parent into main, so parent is merged-equivalent but not an ancestor.
+    repo.run_stax(&["t"]);
+    let squash = repo.git(&["merge", "--squash", &parent]);
+    assert!(
+        squash.status.success(),
+        "Failed squash merge: {}",
+        TestRepo::stderr(&squash)
+    );
+    repo.commit("Squash merge parent");
+
+    repo.run_stax(&["checkout", &child]);
+    let output = repo.run_stax(&["restack", "--quiet"]);
+    assert!(
+        output.status.success(),
+        "restack failed\nstdout: {}\nstderr: {}",
+        TestRepo::stdout(&output),
+        TestRepo::stderr(&output)
+    );
+
+    let metadata_ref = format!("refs/branch-metadata/{}", child);
+    let metadata_output = repo.git(&["show", &metadata_ref]);
+    assert!(
+        metadata_output.status.success(),
+        "Failed to read metadata: {}",
+        TestRepo::stderr(&metadata_output)
+    );
+    let metadata = TestRepo::stdout(&metadata_output);
+    assert!(
+        metadata.contains("\"parentBranchName\":\"main\""),
+        "Expected child to be reparented to trunk, metadata was: {}",
+        metadata
+    );
+
+    let count_output = repo.git(&["rev-list", "--count", &format!("main..{}", child)]);
+    assert!(count_output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&count_output.stdout).trim(),
+        "1",
+        "Expected child to retain only novel commits after restack"
+    );
+}
+
+#[test]
+fn test_restack_auto_normalizes_missing_parent() {
+    let repo = TestRepo::new();
+
+    repo.run_stax(&["bc", "missing-parent"]);
+    let parent = repo.current_branch();
+    repo.create_file("parent.txt", "parent");
+    repo.commit("Parent commit");
+
+    repo.run_stax(&["bc", "missing-child"]);
+    let child = repo.current_branch();
+    repo.create_file("child.txt", "child");
+    repo.commit("Child commit");
+
+    // Delete parent branch, leaving child metadata stale.
+    let delete_parent = repo.git(&["branch", "-D", &parent]);
+    assert!(
+        delete_parent.status.success(),
+        "Failed to delete parent branch: {}",
+        TestRepo::stderr(&delete_parent)
+    );
+
+    let output = repo.run_stax(&["restack", "--quiet"]);
+    assert!(
+        output.status.success(),
+        "restack failed\nstdout: {}\nstderr: {}",
+        TestRepo::stdout(&output),
+        TestRepo::stderr(&output)
+    );
+
+    let metadata_ref = format!("refs/branch-metadata/{}", child);
+    let metadata_output = repo.git(&["show", &metadata_ref]);
+    assert!(
+        metadata_output.status.success(),
+        "Failed to read metadata: {}",
+        TestRepo::stderr(&metadata_output)
+    );
+    let metadata = TestRepo::stdout(&metadata_output);
+    assert!(
+        metadata.contains("\"parentBranchName\":\"main\""),
+        "Expected missing-parent child to be reparented to trunk, metadata was: {}",
+        metadata
+    );
+}
+
+#[test]
+fn test_restack_cleanup_reparents_children_before_deleting_merged_parent() {
+    let repo = TestRepo::new();
+
+    // Stack A: main -> merged-parent -> merged-child
+    repo.run_stax(&["bc", "merged-parent"]);
+    let parent = repo.current_branch();
+    repo.create_file("parent.txt", "parent");
+    repo.commit("Parent commit");
+
+    repo.run_stax(&["bc", "merged-child"]);
+    let child = repo.current_branch();
+    repo.create_file("child.txt", "child");
+    repo.commit("Child commit");
+
+    // Merge parent into trunk so cleanup will consider it.
+    repo.run_stax(&["t"]);
+    let merge_parent = repo.git(&["merge", "--no-ff", &parent, "-m", "Merge parent"]);
+    assert!(
+        merge_parent.status.success(),
+        "Failed to merge parent into main: {}",
+        TestRepo::stderr(&merge_parent)
+    );
+
+    // Stack B: make another branch need restack so cleanup path executes.
+    repo.run_stax(&["bc", "cleanup-trigger"]);
+    let trigger = repo.current_branch();
+    repo.create_file("trigger.txt", "trigger");
+    repo.commit("Trigger commit");
+
+    repo.run_stax(&["t"]);
+    repo.create_file("main-update.txt", "main update");
+    repo.commit("Main update");
+    repo.run_stax(&["checkout", &trigger]);
+
+    let output = repo.run_stax(&["restack", "--yes"]);
+    assert!(
+        output.status.success(),
+        "restack failed\nstdout: {}\nstderr: {}",
+        TestRepo::stdout(&output),
+        TestRepo::stderr(&output)
+    );
+
+    let branches = repo.list_branches();
+    assert!(
+        !branches.iter().any(|b| b == &parent),
+        "Expected merged parent branch to be deleted during cleanup"
+    );
+
+    let metadata_ref = format!("refs/branch-metadata/{}", child);
+    let metadata_output = repo.git(&["show", &metadata_ref]);
+    assert!(
+        metadata_output.status.success(),
+        "Failed to read child metadata after cleanup: {}",
+        TestRepo::stderr(&metadata_output)
+    );
+    let metadata = TestRepo::stdout(&metadata_output);
+    assert!(
+        metadata.contains("\"parentBranchName\":\"main\""),
+        "Expected cleanup to reparent child before deleting parent, metadata was: {}",
+        metadata
+    );
+}
+
+#[test]
 fn test_restack_all_flag() {
     let repo = TestRepo::new();
 
@@ -4250,6 +4416,36 @@ mod github_mock_tests {
         remote_root
     }
 
+    fn squash_merge_branch_on_fake_remote(remote_root: &TempDir, branch: &str) {
+        let remote_repo = remote_root.path().join("test").join("repo.git");
+        let clone_dir = super::test_tempdir();
+
+        let run_remote_git = |args: &[&str]| {
+            let output = hermetic_git_command()
+                .args(args)
+                .current_dir(clone_dir.path())
+                .output()
+                .expect("Failed to run git in fake remote clone");
+            assert!(
+                output.status.success(),
+                "git {:?} failed\nstdout: {}\nstderr: {}",
+                args,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+
+        run_remote_git(&["clone", remote_repo.to_str().unwrap(), "."]);
+        run_remote_git(&["checkout", "-B", "main", "origin/main"]);
+        run_remote_git(&["config", "user.email", "merger@test.com"]);
+        run_remote_git(&["config", "user.name", "Merger"]);
+        run_remote_git(&["fetch", "origin", branch]);
+        run_remote_git(&["merge", "--squash", &format!("origin/{}", branch)]);
+        run_remote_git(&["commit", "-m", &format!("Squash merge {}", branch)]);
+        run_remote_git(&["push", "origin", "main"]);
+        run_remote_git(&["push", "origin", "--delete", branch]);
+    }
+
     fn run_stax_with_env(repo: &TestRepo, home: &Path, args: &[&str]) -> Output {
         let gitconfig = ensure_empty_gitconfig(home);
         Command::new(stax_bin())
@@ -4534,7 +4730,7 @@ mod github_mock_tests {
 
         let home = super::test_tempdir();
         let repo = TestRepo::new();
-        let _remote_root = setup_fake_github_remote(&repo, home.path());
+        let remote_root = setup_fake_github_remote(&repo, home.path());
         write_test_config(home.path(), &mock_server.uri());
 
         let output = run_stax_with_env(&repo, home.path(), &["bc", "merge-a"]);
@@ -4544,8 +4740,10 @@ mod github_mock_tests {
             TestRepo::stderr(&output)
         );
         let branch_a = repo.current_branch();
-        repo.create_file("a.txt", "a");
-        repo.commit("A");
+        repo.create_file("parent.txt", "parent 1\n");
+        repo.commit("Parent commit 1");
+        repo.create_file("parent.txt", "parent 1\nparent 2\n");
+        repo.commit("Parent commit 2");
         let push_a = git_with_env(&repo, home.path(), &["push", "-u", "origin", &branch_a]);
         assert!(
             push_a.status.success(),
@@ -4569,11 +4767,14 @@ mod github_mock_tests {
             TestRepo::stderr(&push_b)
         );
 
+        // Simulate GitHub squash-merging the first branch before running stax merge.
+        squash_merge_branch_on_fake_remote(&remote_root, &branch_a);
+
         // Start from the top branch so merge scope is [merge-a, merge-b].
         let merge_output = run_stax_with_env(
             &repo,
             home.path(),
-            &["merge", "--yes", "--no-wait", "--no-delete"],
+            &["merge", "--yes", "--no-wait", "--no-delete", "--no-sync"],
         );
         assert!(
             merge_output.status.success(),
@@ -4598,10 +4799,34 @@ mod github_mock_tests {
         );
 
         let merge_stdout = TestRepo::stdout(&merge_output);
+        let merge_stderr = TestRepo::stderr(&merge_output);
+        let merge_combined = format!("{}{}", merge_stdout, merge_stderr);
         assert!(
             merge_stdout.contains("Already merged"),
             "Expected merge output to include already-merged path. Output:\n{}",
             merge_stdout
+        );
+        assert!(
+            !merge_combined.contains("Rebase conflict"),
+            "Expected provenance-aware rebase to avoid conflicts. Output:\n{}",
+            merge_combined
+        );
+
+        let unique_count = git_with_env(
+            &repo,
+            home.path(),
+            &["rev-list", "--count", &format!("origin/main..{}", branch_b)],
+        );
+        assert!(
+            unique_count.status.success(),
+            "Failed to count unique commits for {}: {}",
+            branch_b,
+            TestRepo::stderr(&unique_count)
+        );
+        assert_eq!(
+            TestRepo::stdout(&unique_count).trim(),
+            "1",
+            "Expected descendant branch to keep only novel commits after squash-merge restack"
         );
     }
 
@@ -4611,7 +4836,7 @@ mod github_mock_tests {
         let mock_server = MockServer::start().await;
         let home = super::test_tempdir();
         let repo = TestRepo::new();
-        let _remote_root = setup_fake_github_remote(&repo, home.path());
+        let remote_root = setup_fake_github_remote(&repo, home.path());
         write_test_config(home.path(), &mock_server.uri());
 
         let output = run_stax_with_env(&repo, home.path(), &["bc", "mwr-a"]);
@@ -4621,8 +4846,10 @@ mod github_mock_tests {
             TestRepo::stderr(&output)
         );
         let branch_a = repo.current_branch();
-        repo.create_file("a.txt", "a");
-        repo.commit("A");
+        repo.create_file("parent.txt", "parent 1\n");
+        repo.commit("Parent commit 1");
+        repo.create_file("parent.txt", "parent 1\nparent 2\n");
+        repo.commit("Parent commit 2");
         let push_a = git_with_env(&repo, home.path(), &["push", "-u", "origin", &branch_a]);
         assert!(
             push_a.status.success(),
@@ -4645,6 +4872,9 @@ mod github_mock_tests {
             "Failed to push mwr-b: {}",
             TestRepo::stderr(&push_b)
         );
+
+        // Simulate GitHub squash-merging the first branch before merge --when-ready.
+        squash_merge_branch_on_fake_remote(&remote_root, &branch_a);
 
         // Resolve PRs for both stack branches during merge-when-ready scope validation.
         Mock::given(method("GET"))
@@ -4769,10 +4999,34 @@ mod github_mock_tests {
         );
 
         let merge_stdout = TestRepo::stdout(&merge_output);
+        let merge_stderr = TestRepo::stderr(&merge_output);
+        let merge_combined = format!("{}{}", merge_stdout, merge_stderr);
         assert!(
             merge_stdout.contains("Already merged"),
             "Expected merge-when-ready output to include already-merged path. Output:\n{}",
             merge_stdout
+        );
+        assert!(
+            !merge_combined.contains("Rebase conflict"),
+            "Expected provenance-aware rebase to avoid conflicts. Output:\n{}",
+            merge_combined
+        );
+
+        let unique_count = git_with_env(
+            &repo,
+            home.path(),
+            &["rev-list", "--count", &format!("origin/main..{}", branch_b)],
+        );
+        assert!(
+            unique_count.status.success(),
+            "Failed to count unique commits for {}: {}",
+            branch_b,
+            TestRepo::stderr(&unique_count)
+        );
+        assert_eq!(
+            TestRepo::stdout(&unique_count).trim(),
+            "1",
+            "Expected descendant branch to keep only novel commits after squash-merge restack"
         );
     }
 
