@@ -26,6 +26,7 @@ pub mod pr;
 pub mod range_diff;
 pub mod redo;
 pub mod reorder;
+pub mod resolve;
 pub mod restack;
 pub mod split;
 pub mod stack_cmd;

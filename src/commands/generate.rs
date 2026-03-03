@@ -281,7 +281,7 @@ fn resolve_agent(cli_flag: Option<&str>, config: &mut Config) -> Result<String> 
     }
 }
 
-fn validate_agent_name(agent: &str) -> Result<()> {
+pub(crate) fn validate_agent_name(agent: &str) -> Result<()> {
     if !SUPPORTED_AGENTS.contains(&agent) {
         bail!(
             "Unsupported AI agent: '{}'. Supported agents: {}",

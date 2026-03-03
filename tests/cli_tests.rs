@@ -21,6 +21,7 @@ fn test_help() {
     assert!(stdout.contains("status"));
     assert!(stdout.contains("submit"));
     assert!(stdout.contains("restack"));
+    assert!(stdout.contains("resolve"));
 }
 
 #[test]
@@ -207,6 +208,16 @@ fn test_restack_help_flags() {
     assert!(stdout.contains("ask"));
     assert!(stdout.contains("yes"));
     assert!(stdout.contains("no"));
+}
+
+#[test]
+fn test_resolve_help_flags() {
+    let output = stax(&["resolve", "--help"]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--agent"));
+    assert!(stdout.contains("--model"));
+    assert!(stdout.contains("--max-rounds"));
 }
 
 #[test]

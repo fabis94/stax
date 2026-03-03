@@ -238,6 +238,7 @@ pub fn run(
                 if !quiet {
                     println!();
                     println!("{}", "Resolve conflicts and run:".yellow());
+                    println!("  {}", "stax resolve".cyan());
                     println!("  {}", "stax continue".cyan());
                     println!("  {}", "stax restack --continue".cyan());
                 }

@@ -1131,6 +1131,80 @@ Use --auto-stash-pop or stash/commit changes first.",
         Ok(())
     }
 
+    /// List files currently in an unmerged (conflicted) state.
+    pub fn conflicted_files(&self) -> Result<Vec<String>> {
+        let output = self.run_git(self.workdir()?, &["diff", "--name-only", "--diff-filter=U"])?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            anyhow::bail!("git diff --name-only --diff-filter=U failed: {}", stderr);
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(ToString::to_string)
+            .collect())
+    }
+
+    /// List paths currently modified, staged, unmerged, or untracked.
+    pub fn changed_files(&self) -> Result<Vec<String>> {
+        let output = self.run_git(
+            self.workdir()?,
+            &["status", "--porcelain", "--untracked-files=all"],
+        )?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            anyhow::bail!(
+                "git status --porcelain --untracked-files=all failed: {}",
+                stderr
+            );
+        }
+
+        let mut seen = HashSet::new();
+        let mut files = Vec::new();
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if line.len() < 4 {
+                continue;
+            }
+            let mut path = line[3..].trim().to_string();
+            if path.is_empty() {
+                continue;
+            }
+
+            if let Some((_, new_path)) = path.rsplit_once(" -> ") {
+                path = new_path.to_string();
+            }
+
+            if seen.insert(path.clone()) {
+                files.push(path);
+            }
+        }
+
+        Ok(files)
+    }
+
+    /// Stage an explicit list of files.
+    pub fn add_files(&self, paths: &[String]) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+
+        let status = Command::new("git")
+            .arg("add")
+            .arg("--")
+            .args(paths)
+            .current_dir(self.workdir()?)
+            .status()
+            .context("Failed to run git add")?;
+
+        if !status.success() {
+            anyhow::bail!("git add failed");
+        }
+
+        Ok(())
+    }
+
     /// Update a ref to point to a specific OID
     pub fn update_ref(&self, refname: &str, oid: &str) -> Result<()> {
         let status = Command::new("git")

@@ -4,16 +4,7 @@ use crate::git::{GitRepo, RebaseResult};
 use anyhow::Result;
 use colored::Colorize;
 
-pub fn run() -> Result<()> {
-    let repo = GitRepo::open()?;
-
-    if !repo.rebase_in_progress()? {
-        println!("{}", "No rebase in progress.".yellow());
-        return Ok(());
-    }
-
-    println!("Continuing rebase...");
-
+pub(crate) fn continue_rebase_and_update_metadata(repo: &GitRepo) -> Result<RebaseResult> {
     match repo.rebase_continue()? {
         RebaseResult::Success => {
             // Update metadata for current branch
@@ -26,7 +17,24 @@ pub fn run() -> Result<()> {
                 };
                 updated_meta.write(repo.inner(), &current)?;
             }
+            Ok(RebaseResult::Success)
+        }
+        RebaseResult::Conflict => Ok(RebaseResult::Conflict),
+    }
+}
 
+pub fn run() -> Result<()> {
+    let repo = GitRepo::open()?;
+
+    if !repo.rebase_in_progress()? {
+        println!("{}", "No rebase in progress.".yellow());
+        return Ok(());
+    }
+
+    println!("Continuing rebase...");
+
+    match continue_rebase_and_update_metadata(&repo)? {
+        RebaseResult::Success => {
             println!("{}", "✓ Rebase completed successfully!".green());
             let config = Config::load().unwrap_or_default();
             if config.ui.tips {

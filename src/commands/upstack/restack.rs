@@ -115,6 +115,7 @@ pub fn run(auto_stash_pop: bool) -> Result<()> {
                 println!("    {}", "✗ conflict".red());
                 println!();
                 println!("{}", "Resolve conflicts and run:".yellow());
+                println!("  {}", "stax resolve".cyan());
                 println!("  {}", "stax continue".cyan());
 
                 // Finish transaction with error

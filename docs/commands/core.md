@@ -17,6 +17,7 @@
 | `stax open` | Open repository in browser |
 | `stax undo` | Undo last risky operation |
 | `stax redo` | Re-apply undone operation |
+| `stax resolve` | Resolve in-progress rebase conflicts using AI |
 | `stax abort` | Abort in-progress rebase/conflict resolution |
 | `stax detach` | Remove branch from stack, reparent children |
 | `stax test <cmd>` | Run a command on each branch in the stack |

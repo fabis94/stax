@@ -61,6 +61,7 @@
 
 | Command | Description |
 |---|---|
+| `stax resolve` | Resolve in-progress rebase conflicts using AI |
 | `stax abort` | Abort in-progress rebase/conflict resolution |
 | `stax undo` | Undo last operation |
 | `stax undo <op-id>` | Undo specific operation |
@@ -154,6 +155,7 @@
 - `stax sync --verbose`
 - `stax restack --all --continue --quiet`
 - `stax restack --submit-after ask|yes|no`
+- `stax resolve --agent codex --model gpt-5.3-codex --max-rounds 5`
 - `stax cascade --no-pr`
 - `stax cascade --no-submit`
 - `stax checkout --trunk`

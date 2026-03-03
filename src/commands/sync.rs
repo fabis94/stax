@@ -788,6 +788,7 @@ pub fn run(
                         LiveTimer::maybe_finish_warn(restack_timer, "conflict");
                         if !quiet {
                             println!("  {}", "Resolve conflicts and run:".yellow());
+                            println!("    {}", "stax resolve".cyan());
                             println!("    {}", "stax continue".cyan());
                             println!("    {}", "stax sync --continue".cyan());
                         }

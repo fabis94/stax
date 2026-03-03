@@ -156,6 +156,7 @@ st rs --restack
 | `st standup --summary --jit` | Add Jira `jit` context for in-flight PR tickets and likely next backlog work |
 | `st changelog` | Generate changelog between two refs |
 | `st undo` | Undo last operation (restack, submit, etc.) |
+| `st resolve` | Resolve in-progress rebase conflicts using AI |
 | `st abort` | Abort in-progress rebase/conflict resolution |
 | `st detach` | Remove a branch from its stack (reparent children) |
 | `st reorder` | Interactively reorder branches in a stack |
@@ -1060,6 +1061,7 @@ st submit --edit             # Force editor open
 ### Recovery
 | Command | Description |
 |---------|-------------|
+| `st resolve` | Resolve in-progress rebase conflicts using AI |
 | `st abort` | Abort in-progress rebase/conflict resolution |
 | `st undo` | Undo last operation (restack, submit, etc.) |
 | `st undo <op-id>` | Undo a specific operation by ID |
@@ -1155,6 +1157,7 @@ st submit --edit             # Force editor open
 - `st restack --auto-stash-pop` - Auto-stash/pop dirty target worktrees during restack
 - `st restack --all` - Restack all branches in current stack
 - `st restack --continue` - Continue after resolving restack conflicts
+- `st resolve --agent codex --model gpt-5.3-codex --max-rounds 5` - AI-resolve active rebase conflicts in a guarded loop
 - `st restack --submit-after ask|yes|no` - After restack, ask/auto-submit/skip `st ss`
 - `st restack --quiet` - Minimize restack output
 - `st upstack restack --auto-stash-pop` - Auto-stash/pop when restacking descendants

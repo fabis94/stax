@@ -299,6 +299,16 @@ impl TestRepo {
             .expect("Failed to execute stax")
     }
 
+    /// Run a stax command with additional environment variables.
+    pub fn run_stax_with_env(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
+        let mut cmd = sanitized_stax_command();
+        cmd.args(args).current_dir(self.path());
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
+        cmd.output().expect("Failed to execute stax")
+    }
+
     /// Run a stax command in a specific directory
     pub fn run_stax_in(&self, cwd: &Path, args: &[&str]) -> Output {
         sanitized_stax_command()

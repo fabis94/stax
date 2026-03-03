@@ -321,6 +321,19 @@ enum Commands {
     #[command(visible_alias = "cont")]
     Continue,
 
+    /// Resolve in-progress rebase conflicts using AI and continue automatically
+    Resolve {
+        /// AI agent override (claude, codex, gemini, opencode)
+        #[arg(long)]
+        agent: Option<String>,
+        /// Model override for the selected agent
+        #[arg(long)]
+        model: Option<String>,
+        /// Maximum AI resolve rounds before stopping
+        #[arg(long, default_value_t = 5)]
+        max_rounds: usize,
+    },
+
     /// Abort an in-progress rebase/conflict resolution
     Abort,
 
@@ -1112,6 +1125,11 @@ fn main() -> Result<()> {
             child,
         } => commands::checkout::run(branch, trunk, parent, child),
         Commands::Continue => commands::continue_cmd::run(),
+        Commands::Resolve {
+            agent,
+            model,
+            max_rounds,
+        } => commands::resolve::run(agent, model, max_rounds),
         Commands::Abort => commands::abort::run(),
         Commands::Modify { message, quiet } => commands::modify::run(message, quiet),
         Commands::Auth { .. } => unreachable!(), // Handled above
