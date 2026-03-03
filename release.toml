@@ -1,5 +1,5 @@
-sign-commit = false
-sign-tag = false
+sign-commit = true
+sign-tag = true
 publish = true 
 push = true
 tag-name = "v{{version}}"
