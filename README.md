@@ -263,6 +263,8 @@ Details:
 
 ```bash
 st config
+st config --reset-ai
+st config --reset-ai --no-prompt
 ```
 
 Config file location:
@@ -272,6 +274,14 @@ Config file location:
 ```
 
 Common settings include branch naming format, auth source preferences, and enterprise GitHub API host overrides.
+
+If you want stax to reset and immediately re-prompt for the AI agent/model, run:
+
+```bash
+st config --reset-ai
+```
+
+Use `st config --reset-ai --no-prompt` to only clear the saved pairing without opening the picker.
 
 Read full config reference: [docs/configuration/index.md](docs/configuration/index.md)
 

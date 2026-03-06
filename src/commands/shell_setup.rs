@@ -71,10 +71,7 @@ pub fn prompt_if_missing() -> Result<()> {
         return Ok(());
     }
 
-    eprintln!(
-        "{} Shell integration not detected.",
-        "stax:".cyan().bold()
-    );
+    eprintln!("{} Shell integration not detected.", "stax:".cyan().bold());
     eprintln!(
         "  Run {} for transparent worktree navigation (cd).",
         "stax shell-setup --install".cyan()
@@ -110,10 +107,7 @@ fn install_to_shell_config() -> Result<()> {
         String::new()
     };
 
-    if existing
-        .lines()
-        .any(|l| l.contains(INTEGRATION_MARKER))
-    {
+    if existing.lines().any(|l| l.contains(INTEGRATION_MARKER)) {
         println!(
             "{}  Already present in {}",
             "OK".green().bold(),
@@ -150,10 +144,7 @@ fn install_to_shell_config() -> Result<()> {
         "Done.".green().bold(),
         config_path.display()
     );
-    println!(
-        "  Restart your shell or run: {}",
-        shell_source_cmd().cyan()
-    );
+    println!("  Restart your shell or run: {}", shell_source_cmd().cyan());
 
     Ok(())
 }

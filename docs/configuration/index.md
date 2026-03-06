@@ -2,6 +2,8 @@
 
 ```bash
 st config
+st config --reset-ai
+st config --reset-ai --no-prompt
 ```
 
 Main config path: `~/.config/stax/config.toml`
@@ -36,6 +38,22 @@ Main config path: `~/.config/stax/config.toml`
 # worktrees_dir = ".stax/trees"
 # default_editor = "auto"   # "auto" | "cursor" | "codex" | "code"
 # post_create_hook = ""     # shell command run inside new worktree after creation
+```
+
+## Reset saved AI defaults
+
+Reset the saved `[ai]` defaults and immediately choose a new agent/model pair:
+
+```bash
+st config --reset-ai
+```
+
+This clears `ai.agent` and `ai.model` from `~/.config/stax/config.toml`, then reopens the interactive picker in a real terminal and saves the new selection.
+
+If you only want to clear the saved pairing without prompting:
+
+```bash
+st config --reset-ai --no-prompt
 ```
 
 ## Branch naming format

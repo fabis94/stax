@@ -43,7 +43,8 @@ fn resolve_path(name: &str) -> Result<std::path::PathBuf> {
     let found = worktrees.iter().find(|wt| {
         wt.name == name
             || wt.branch.as_deref() == Some(name)
-            || wt.branch
+            || wt
+                .branch
                 .as_deref()
                 .map(|b| b.ends_with(&format!("/{}", name)))
                 .unwrap_or(false)

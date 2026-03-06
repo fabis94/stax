@@ -71,10 +71,7 @@ pub fn run(branch: Option<String>, name: Option<String>) -> Result<()> {
         worktree_name.cyan(),
         branch_name.blue()
     );
-    println!(
-        "  Path:   {}",
-        worktree_path.display().to_string().dimmed()
-    );
+    println!("  Path:   {}", worktree_path.display().to_string().dimmed());
 
     if std::env::var("STAX_SHELL_INTEGRATION").is_ok() {
         println!(
@@ -82,10 +79,7 @@ pub fn run(branch: Option<String>, name: Option<String>) -> Result<()> {
             format!("stax worktree go {}", worktree_name).cyan()
         );
     } else {
-        println!(
-            "\n  {}",
-            format!("cd {}", worktree_path.display()).cyan()
-        );
+        println!("\n  {}", format!("cd {}", worktree_path.display()).cyan());
     }
 
     Ok(())

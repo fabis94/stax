@@ -351,7 +351,17 @@ enum Commands {
     },
 
     /// Show config file path and contents
-    Config,
+    Config {
+        /// Clear saved AI agent/model defaults so stax prompts again later
+        #[arg(long)]
+        reset_ai: bool,
+        /// Clear saved AI defaults without opening the interactive picker
+        #[arg(long, requires = "reset_ai")]
+        no_prompt: bool,
+        /// Skip confirmation when used with --reset-ai
+        #[arg(short, long, requires = "reset_ai")]
+        yes: bool,
+    },
 
     /// Show diffs for each branch vs parent plus an aggregate stack diff
     Diff {
@@ -1040,8 +1050,12 @@ pub fn run() -> Result<()> {
             update::check_in_background();
             return result;
         }
-        Commands::Config => {
-            let result = commands::config::run();
+        Commands::Config {
+            reset_ai,
+            no_prompt,
+            yes,
+        } => {
+            let result = commands::config::run(*reset_ai, *no_prompt, *yes);
             update::show_update_notification();
             update::check_in_background();
             return result;
@@ -1208,7 +1222,7 @@ pub fn run() -> Result<()> {
         Commands::Abort => commands::abort::run(),
         Commands::Modify { message, quiet } => commands::modify::run(message, quiet),
         Commands::Auth { .. } => unreachable!(), // Handled above
-        Commands::Config => unreachable!(),      // Handled above
+        Commands::Config { .. } => unreachable!(), // Handled above
         Commands::Diff { stack, all } => commands::diff::run(stack, all),
         Commands::RangeDiff { stack, all } => commands::range_diff::run(stack, all),
         Commands::Doctor => unreachable!(), // Handled above

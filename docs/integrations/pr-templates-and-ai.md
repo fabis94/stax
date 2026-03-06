@@ -55,6 +55,16 @@ st generate --pr-body
 - `--edit` review/edit generated body before update
 - Supported agents: `claude`, `codex`, `gemini`, `opencode`
 
+When `codex` is selected, stax will try OpenAI's live Models API first (using `OPENAI_API_KEY`) before falling back to its local Codex defaults.
+
+If you want stax to forget the saved AI pairing and immediately ask again:
+
+```bash
+st config --reset-ai
+```
+
+Use `st config --reset-ai --no-prompt` to clear the saved pairing without reopening the picker.
+
 You can also generate during submit:
 
 ```bash

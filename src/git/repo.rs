@@ -156,12 +156,11 @@ impl GitRepo {
         let mut current_path: Option<PathBuf> = None;
         let mut current_branch: Option<String> = None;
 
-        let mut flush_entry =
-            |path: &mut Option<PathBuf>, branch: &mut Option<String>| {
-                if let Some(p) = path.take() {
-                    raw_entries.push((Self::normalize_path(&p), branch.take()));
-                }
-            };
+        let mut flush_entry = |path: &mut Option<PathBuf>, branch: &mut Option<String>| {
+            if let Some(p) = path.take() {
+                raw_entries.push((Self::normalize_path(&p), branch.take()));
+            }
+        };
 
         for line in stdout.lines() {
             if line.is_empty() {
@@ -200,7 +199,13 @@ impl GitRepo {
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_else(|| "unknown".to_string())
                 };
-                WorktreeInfo { name, path, branch, is_main, is_current }
+                WorktreeInfo {
+                    name,
+                    path,
+                    branch,
+                    is_main,
+                    is_current,
+                }
             })
             .collect();
 
@@ -243,12 +248,7 @@ impl GitRepo {
     }
 
     /// Create a new linked worktree at `path` with a brand-new `branch` stacked on `base`.
-    pub fn worktree_create_new_branch(
-        &self,
-        branch: &str,
-        path: &Path,
-        base: &str,
-    ) -> Result<()> {
+    pub fn worktree_create_new_branch(&self, branch: &str, path: &Path, base: &str) -> Result<()> {
         let main_dir = self.main_repo_workdir()?;
         let output = self.run_git(
             &main_dir,

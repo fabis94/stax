@@ -12,6 +12,14 @@ fn stax(args: &[&str]) -> std::process::Output {
         .expect("Failed to execute stax")
 }
 
+fn stax_with_home(args: &[&str], home: &std::path::Path) -> std::process::Output {
+    Command::new(stax_bin())
+        .args(args)
+        .env("HOME", home)
+        .output()
+        .expect("Failed to execute stax")
+}
+
 #[test]
 fn test_help() {
     let output = stax(&["--help"]);
@@ -191,6 +199,44 @@ fn test_config_command() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Config path:"));
     assert!(stdout.contains(".config/stax/config.toml"));
+}
+
+#[test]
+fn test_config_help_includes_reset_ai_flag() {
+    let output = stax(&["config", "--help"]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--reset-ai"));
+    assert!(stdout.contains("--no-prompt"));
+    assert!(stdout.contains("--yes"));
+}
+
+#[test]
+fn test_config_reset_ai_no_prompt_clears_saved_defaults() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "stax-cli-test-config-reset-ai-{}",
+        std::process::id()
+    ));
+    let config_dir = temp_dir.join(".config").join("stax");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "[ai]\nagent = \"codex\"\nmodel = \"gpt-5.3-codex\"\n",
+    )
+    .unwrap();
+
+    let output = stax_with_home(&["config", "--reset-ai", "--no-prompt", "--yes"], &temp_dir);
+    assert!(output.status.success(), "{:?}", output);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Cleared saved AI defaults"));
+    assert!(stdout.contains("Skipped reconfiguration"));
+
+    let updated = std::fs::read_to_string(config_dir.join("config.toml")).unwrap();
+    assert!(!updated.contains("agent = \"codex\""));
+    assert!(!updated.contains("model = \"gpt-5.3-codex\""));
+
+    let _ = std::fs::remove_dir_all(temp_dir);
 }
 
 #[test]

@@ -276,6 +276,14 @@ impl Config {
         Ok(())
     }
 
+    /// Clear any saved AI agent/model defaults so interactive commands can re-prompt.
+    pub fn clear_ai_defaults(&mut self) -> bool {
+        let had_saved_defaults = self.ai.agent.is_some() || self.ai.model.is_some();
+        self.ai.agent = None;
+        self.ai.model = None;
+        had_saved_defaults
+    }
+
     /// Get GitHub token (from env var, credentials file, or gh cli)
     /// Priority:
     /// 1. STAX_GITHUB_TOKEN

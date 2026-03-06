@@ -12,7 +12,8 @@ pub fn run(name: &str, force: bool) -> Result<()> {
         .find(|wt| {
             wt.name == name
                 || wt.branch.as_deref() == Some(name)
-                || wt.branch
+                || wt
+                    .branch
                     .as_deref()
                     .map(|b| b.ends_with(&format!("/{}", name)))
                     .unwrap_or(false)
@@ -24,9 +25,7 @@ pub fn run(name: &str, force: bool) -> Result<()> {
     }
 
     if wt.is_current {
-        bail!(
-            "Cannot remove the worktree you are currently in. Switch to another worktree first."
-        );
+        bail!("Cannot remove the worktree you are currently in. Switch to another worktree first.");
     }
 
     // Warn about dirty state unless --force

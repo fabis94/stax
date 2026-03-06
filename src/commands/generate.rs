@@ -7,6 +7,9 @@ use crate::remote;
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
 use dialoguer::{theme::ColorfulTheme, Confirm, Editor, Select};
+use regex::Regex;
+use serde::Deserialize;
+use std::io::IsTerminal;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -26,8 +29,9 @@ const CLAUDE_MODELS: &[(&str, &str)] = &[
 ];
 
 const CODEX_MODELS: &[(&str, &str)] = &[
-    ("gpt-5.3-codex", "GPT-5.3 Codex (default)"),
-    ("gpt-5.3-codex-spark", "GPT-5.3 Codex Spark (Pro)"),
+    ("gpt-5.4", "GPT-5.4"),
+    ("gpt-5.4-pro", "GPT-5.4 Pro"),
+    ("gpt-5.3-codex", "GPT-5.3 Codex"),
     ("gpt-4.1-mini", "GPT-4.1 Mini"),
 ];
 
@@ -186,99 +190,8 @@ fn resolve_agent(cli_flag: Option<&str>, config: &mut Config) -> Result<String> 
         }
     }
 
-    // 3. Auto-detect from PATH
-    let available = detect_available_agents();
-
-    match available.len() {
-        0 => {
-            bail!(
-                "No AI agent found on PATH.\n  \
-                 Install one of:\n    \
-                 - claude (https://docs.anthropic.com)\n    \
-                 - codex  (https://github.com/openai/codex)\n  \
-                 - gemini (https://github.com/google-gemini/gemini-cli)\n  \
-                 - opencode (https://opencode.ai)\n  \
-                 Or set manually in ~/.config/stax/config.toml:\n    \
-                 [ai]\n    \
-                 agent = \"claude\""
-            );
-        }
-        1 => {
-            let agent = available[0].clone();
-            println!(
-                "  {} {}",
-                "Detected AI agent:".dimmed(),
-                agent.cyan().bold()
-            );
-
-            // Still show model picker, then offer to save
-            let model = pick_model_interactive(&agent)?;
-            let save = Confirm::with_theme(&ColorfulTheme::default())
-                .with_prompt("Save choices to config?")
-                .default(true)
-                .interact()?;
-
-            if save {
-                config.ai.agent = Some(agent.clone());
-                config.ai.model = model.clone();
-                config.save()?;
-                let model_display = model.as_deref().unwrap_or("agent default");
-                println!(
-                    "  {} Saved ai.agent = \"{}\", ai.model = \"{}\"",
-                    "✓".green().bold(),
-                    agent,
-                    model_display
-                );
-            }
-
-            Ok(agent)
-        }
-        _ => {
-            // Multiple agents: show picker
-            let items: Vec<String> = available
-                .iter()
-                .enumerate()
-                .map(|(i, name)| {
-                    if i == 0 {
-                        format!("{} (default)", name)
-                    } else {
-                        name.to_string()
-                    }
-                })
-                .collect();
-
-            let selection = Select::with_theme(&ColorfulTheme::default())
-                .with_prompt("Select AI agent")
-                .items(&items)
-                .default(0)
-                .interact()?;
-
-            let agent = available[selection].clone();
-
-            // Show model picker
-            let model = pick_model_interactive(&agent)?;
-
-            let save = Confirm::with_theme(&ColorfulTheme::default())
-                .with_prompt("Save choices to config?")
-                .default(true)
-                .interact()?;
-
-            if save {
-                config.ai.agent = Some(agent.clone());
-                config.ai.model = model.clone();
-                config.save()?;
-                let model_display = model.as_deref().unwrap_or("agent default");
-                println!(
-                    "  {} Saved ai.agent = \"{}\", ai.model = \"{}\"",
-                    "✓".green().bold(),
-                    agent,
-                    model_display
-                );
-            }
-
-            Ok(agent)
-        }
-    }
+    let (agent, _) = prompt_for_agent_and_model(config, true)?;
+    Ok(agent)
 }
 
 pub(crate) fn validate_agent_name(agent: &str) -> Result<()> {
@@ -348,14 +261,14 @@ fn resolve_model(cli_flag: Option<&str>, config: &Config, agent: &str) -> Result
 }
 
 fn pick_model_interactive(agent: &str) -> Result<Option<String>> {
-    let models = known_models_for(agent);
+    let models = available_models_for(agent);
     if models.is_empty() {
         return Ok(None);
     }
 
     let items: Vec<String> = models
         .iter()
-        .map(|(id, desc)| format!("{} — {}", id, desc))
+        .map(|model| format!("{} — {}", model.id, model.description))
         .collect();
 
     let selection = Select::with_theme(&ColorfulTheme::default())
@@ -364,12 +277,15 @@ fn pick_model_interactive(agent: &str) -> Result<Option<String>> {
         .default(0)
         .interact()?;
 
-    Ok(Some(models[selection].0.to_string()))
+    Ok(Some(models[selection].id.clone()))
 }
 
 fn validate_model_soft(agent: &str, model: &str) {
     let models = known_models_for(agent);
-    if !models.is_empty() && !models.iter().any(|(id, _)| *id == model) {
+    if !models.is_empty()
+        && !models.iter().any(|(id, _)| *id == model)
+        && !model_matches_agent_family(agent, model)
+    {
         eprintln!(
             "  {} Unknown model '{}' for agent '{}', proceeding anyway...",
             "⚠".yellow(),
@@ -390,9 +306,245 @@ fn known_models_for(agent: &str) -> &'static [(&'static str, &'static str)] {
 }
 
 fn known_agent_for_model(model: &str) -> Option<&'static str> {
-    ["claude", "codex", "gemini", "opencode"]
+    ["claude", "gemini", "opencode"]
         .into_iter()
         .find(|agent| known_models_for(agent).iter().any(|(id, _)| *id == model))
+        .or_else(|| {
+            if model_matches_agent_family("codex", model) {
+                Some("codex")
+            } else {
+                None
+            }
+        })
+}
+
+pub(crate) fn prompt_for_agent_and_model(
+    config: &mut Config,
+    confirm_before_save: bool,
+) -> Result<(String, Option<String>)> {
+    let available = detect_available_agents();
+
+    match available.len() {
+        0 => {
+            bail!(
+                "No AI agent found on PATH.\n  \
+                 Install one of:\n    \
+                 - claude (https://docs.anthropic.com)\n    \
+                 - codex  (https://github.com/openai/codex)\n  \
+                 - gemini (https://github.com/google-gemini/gemini-cli)\n  \
+                 - opencode (https://opencode.ai)\n  \
+                 Or set manually in ~/.config/stax/config.toml:\n    \
+                 [ai]\n    \
+                 agent = \"claude\""
+            );
+        }
+        1 => {
+            let agent = available[0].clone();
+            println!(
+                "  {} {}",
+                "Detected AI agent:".dimmed(),
+                agent.cyan().bold()
+            );
+            let model = pick_model_interactive(&agent)?;
+            persist_prompt_selection(config, &agent, model.clone(), confirm_before_save)?;
+            Ok((agent, model))
+        }
+        _ => {
+            let items: Vec<String> = available
+                .iter()
+                .enumerate()
+                .map(|(i, name)| {
+                    if i == 0 {
+                        format!("{} (default)", name)
+                    } else {
+                        name.to_string()
+                    }
+                })
+                .collect();
+
+            let selection = Select::with_theme(&ColorfulTheme::default())
+                .with_prompt("Select AI agent")
+                .items(&items)
+                .default(0)
+                .interact()?;
+
+            let agent = available[selection].clone();
+            let model = pick_model_interactive(&agent)?;
+            persist_prompt_selection(config, &agent, model.clone(), confirm_before_save)?;
+            Ok((agent, model))
+        }
+    }
+}
+
+fn persist_prompt_selection(
+    config: &mut Config,
+    agent: &str,
+    model: Option<String>,
+    confirm_before_save: bool,
+) -> Result<()> {
+    let should_save = if confirm_before_save {
+        Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt("Save choices to config?")
+            .default(true)
+            .interact()?
+    } else {
+        true
+    };
+
+    if should_save {
+        config.ai.agent = Some(agent.to_string());
+        config.ai.model = model.clone();
+        config.save()?;
+        let model_display = model.as_deref().unwrap_or("agent default");
+        println!(
+            "  {} Saved ai.agent = \"{}\", ai.model = \"{}\"",
+            "✓".green().bold(),
+            agent,
+            model_display
+        );
+    }
+
+    Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ModelOption {
+    id: String,
+    description: String,
+}
+
+fn available_models_for(agent: &str) -> Vec<ModelOption> {
+    if agent == "codex" {
+        if let Ok(models) = fetch_openai_codex_models() {
+            if !models.is_empty() {
+                return models;
+            }
+        }
+    }
+
+    known_models_for(agent)
+        .iter()
+        .map(|(id, description)| ModelOption {
+            id: (*id).to_string(),
+            description: (*description).to_string(),
+        })
+        .collect()
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiModelsResponse {
+    data: Vec<OpenAiModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiModel {
+    id: String,
+}
+
+fn fetch_openai_codex_models() -> Result<Vec<ModelOption>> {
+    let api_key = std::env::var("OPENAI_API_KEY")
+        .context("OPENAI_API_KEY is not set; falling back to local codex model list")?;
+    let base_url = std::env::var("STAX_OPENAI_API_BASE_URL")
+        .unwrap_or_else(|_| "https://api.openai.com".to_string());
+    let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
+
+    let runtime = tokio::runtime::Runtime::new()?;
+    let response = runtime.block_on(async {
+        reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(3))
+            .timeout(std::time::Duration::from_secs(5))
+            .build()?
+            .get(&url)
+            .bearer_auth(api_key)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<OpenAiModelsResponse>()
+            .await
+    })?;
+
+    Ok(filter_live_codex_models(response.data))
+}
+
+fn filter_live_codex_models(models: Vec<OpenAiModel>) -> Vec<ModelOption> {
+    let dated_snapshot = Regex::new(r"-\d{4}-\d{2}-\d{2}$").expect("valid regex");
+    let mut model_ids: Vec<String> = models
+        .into_iter()
+        .map(|model| model.id)
+        .filter(|id| is_codex_picker_candidate(id))
+        .filter(|id| !id.contains("search-api"))
+        .filter(|id| !id.ends_with("-chat-latest"))
+        .filter(|id| !dated_snapshot.is_match(id))
+        .collect();
+
+    model_ids.sort_by(|a, b| compare_model_ids(a, b));
+    model_ids.dedup();
+
+    model_ids
+        .into_iter()
+        .map(|id| ModelOption {
+            id,
+            description: "live via OpenAI Models API".to_string(),
+        })
+        .collect()
+}
+
+fn compare_model_ids(left: &str, right: &str) -> std::cmp::Ordering {
+    model_rank(right)
+        .cmp(&model_rank(left))
+        .then_with(|| left.cmp(right))
+}
+
+fn model_rank(model: &str) -> (i32, i32, i32, u8) {
+    let version = parse_model_version(model);
+    let family_rank = if model.contains("-nano") {
+        0
+    } else if model.contains("-mini") {
+        1
+    } else if model.contains("codex") {
+        2
+    } else if model.contains("-pro") {
+        3
+    } else {
+        4
+    };
+    (version.0, version.1, version.2, family_rank)
+}
+
+fn parse_model_version(model: &str) -> (i32, i32, i32) {
+    let version = model
+        .trim_start_matches("gpt-")
+        .split('-')
+        .next()
+        .unwrap_or_default();
+    let mut parts = version.split('.');
+    let major = parts
+        .next()
+        .and_then(|part| part.parse().ok())
+        .unwrap_or_default();
+    let minor = parts
+        .next()
+        .and_then(|part| part.parse().ok())
+        .unwrap_or_default();
+    let patch = parts
+        .next()
+        .and_then(|part| part.parse().ok())
+        .unwrap_or_default();
+    (major, minor, patch)
+}
+
+fn is_codex_picker_candidate(model: &str) -> bool {
+    model.starts_with("gpt-5") || model.starts_with("gpt-4.1")
+}
+
+fn model_matches_agent_family(agent: &str, model: &str) -> bool {
+    match agent {
+        "claude" => model.starts_with("claude-"),
+        "codex" => is_codex_picker_candidate(model) || model.starts_with("codex"),
+        "gemini" => model.starts_with("gemini-"),
+        "opencode" => model.starts_with("opencode/"),
+        _ => false,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -627,6 +779,35 @@ mod tests {
     }
 
     #[test]
+    fn live_codex_model_filter_keeps_latest_aliases() {
+        let filtered = filter_live_codex_models(vec![
+            OpenAiModel {
+                id: "gpt-5.4-2026-03-05".to_string(),
+            },
+            OpenAiModel {
+                id: "gpt-5.4".to_string(),
+            },
+            OpenAiModel {
+                id: "gpt-5.3-codex".to_string(),
+            },
+            OpenAiModel {
+                id: "gpt-5-search-api".to_string(),
+            },
+            OpenAiModel {
+                id: "gpt-5.2-chat-latest".to_string(),
+            },
+        ]);
+
+        let ids: Vec<&str> = filtered.iter().map(|model| model.id.as_str()).collect();
+        assert_eq!(ids.first().copied(), Some("gpt-5.4"));
+        assert!(ids.contains(&"gpt-5.4"));
+        assert!(ids.contains(&"gpt-5.3-codex"));
+        assert!(!ids.contains(&"gpt-5.4-2026-03-05"));
+        assert!(!ids.contains(&"gpt-5-search-api"));
+        assert!(!ids.contains(&"gpt-5.2-chat-latest"));
+    }
+
+    #[test]
     fn resolve_model_ignores_known_model_from_other_agent() {
         let mut config = Config::default();
         config.ai.model = Some("gpt-5.3-codex".to_string());
@@ -651,5 +832,11 @@ mod tests {
 
         let resolved = resolve_model(None, &config, "claude").unwrap();
         assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn known_agent_for_model_recognizes_newer_codex_family_models() {
+        assert_eq!(known_agent_for_model("gpt-5.4"), Some("codex"));
+        assert_eq!(known_agent_for_model("gpt-5.4-pro"), Some("codex"));
     }
 }

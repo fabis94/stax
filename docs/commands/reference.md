@@ -87,6 +87,8 @@
 | `st auth` | Configure GitHub token |
 | `st auth status` | Show active auth source |
 | `st config` | Show current configuration |
+| `st config --reset-ai` | Clear saved AI defaults, then re-prompt interactively |
+| `st config --reset-ai --no-prompt` | Clear saved AI defaults without reopening the picker |
 | `st doctor` | Check repo health |
 | `st continue` | Continue after conflicts |
 | `st pr` | Open current branch PR |

@@ -62,6 +62,26 @@ fn test_default_config() {
 }
 
 #[test]
+fn test_clear_ai_defaults_clears_agent_and_model() {
+    let mut config = Config::default();
+    config.ai.agent = Some("codex".to_string());
+    config.ai.model = Some("gpt-5.3-codex".to_string());
+
+    assert!(config.clear_ai_defaults());
+    assert_eq!(config.ai.agent, None);
+    assert_eq!(config.ai.model, None);
+}
+
+#[test]
+fn test_clear_ai_defaults_reports_noop_when_unset() {
+    let mut config = Config::default();
+
+    assert!(!config.clear_ai_defaults());
+    assert_eq!(config.ai.agent, None);
+    assert_eq!(config.ai.model, None);
+}
+
+#[test]
 fn test_format_branch_name_no_prefix() {
     let config = Config::default();
     assert_eq!(config.format_branch_name("my-feature"), "my-feature");
