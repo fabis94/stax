@@ -16,7 +16,7 @@
 | `st cascade` | Restack, push, and create/update PRs |
 | `st init` | Initialize stax or reconfigure the repo trunk |
 | `st standup` | Summarize recent engineering activity |
-| `st changelog` | Generate changelog between refs |
+| `st changelog` | Generate changelog between refs (auto-resolves last tag) |
 | `st open` | Open repository in browser |
 | `st undo` | Undo last risky operation |
 | `st redo` | Re-apply undone operation |

@@ -4,7 +4,7 @@ use colored::Colorize;
 use regex::Regex;
 use serde::Serialize;
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// A single commit entry in the changelog
@@ -22,14 +22,69 @@ struct CommitEntry {
 struct ChangelogJson {
     from: String,
     to: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resolved_from: Option<String>,
     path: Option<String>,
     commit_count: usize,
     commits: Vec<CommitEntry>,
 }
 
-pub fn run(from: String, to: String, path: Option<String>, json: bool) -> Result<()> {
+/// Pick the first tag from `git tag --sort=-creatordate` output that matches
+/// the optional prefix. Pure function over the raw stdout string so it can be
+/// unit-tested without a real repo.
+fn pick_latest_tag(git_tag_output: &str, prefix: Option<&str>) -> Result<String> {
+    let tag = git_tag_output
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .find(|l| match prefix {
+            Some(p) => l.starts_with(p),
+            None => true,
+        });
+
+    match tag {
+        Some(t) => Ok(t.to_string()),
+        None => match prefix {
+            Some(p) => anyhow::bail!("No tags found matching prefix '{}'", p),
+            None => anyhow::bail!("No tags found in this repository"),
+        },
+    }
+}
+
+/// Resolve the latest tag in the repo, optionally filtered by prefix.
+fn resolve_latest_tag(workdir: &Path, prefix: Option<&str>) -> Result<String> {
+    let output = Command::new("git")
+        .args(["tag", "--sort=-creatordate"])
+        .current_dir(workdir)
+        .output()
+        .context("Failed to run git tag")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git tag failed: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    pick_latest_tag(&stdout, prefix)
+}
+
+pub fn run(
+    from: Option<String>,
+    to: String,
+    tag_prefix: Option<String>,
+    path: Option<String>,
+    json: bool,
+) -> Result<()> {
     let repo = GitRepo::open()?;
     let workdir = repo.workdir()?;
+
+    let (from, auto_resolved) = match from {
+        Some(f) => (f, false),
+        None => {
+            let tag = resolve_latest_tag(workdir, tag_prefix.as_deref())?;
+            (tag, true)
+        }
+    };
 
     // Resolve path filter relative to current directory and make it relative to repo root
     let resolved_path = if let Some(p) = path.as_ref() {
@@ -87,6 +142,11 @@ pub fn run(from: String, to: String, path: Option<String>, json: bool) -> Result
         let output = ChangelogJson {
             from: from.clone(),
             to: to.clone(),
+            resolved_from: if auto_resolved {
+                Some(from.clone())
+            } else {
+                None
+            },
             path: resolved_path.clone(),
             commit_count: commits.len(),
             commits,
@@ -96,6 +156,12 @@ pub fn run(from: String, to: String, path: Option<String>, json: bool) -> Result
     }
 
     // Pretty output
+    if auto_resolved {
+        println!(
+            "{}",
+            format!("(resolved to latest tag: {})", from).dimmed()
+        );
+    }
     print_changelog(&from, &to, &resolved_path, &commits);
 
     Ok(())
@@ -297,6 +363,7 @@ mod tests {
         let output = ChangelogJson {
             from: "v1.0.0".to_string(),
             to: "HEAD".to_string(),
+            resolved_from: None,
             path: Some("src/".to_string()),
             commit_count: 1,
             commits: vec![CommitEntry {
@@ -312,5 +379,55 @@ mod tests {
         assert!(json.contains("\"from\": \"v1.0.0\""));
         assert!(json.contains("\"path\": \"src/\""));
         assert!(json.contains("\"commit_count\": 1"));
+        assert!(!json.contains("resolved_from"));
+    }
+
+    #[test]
+    fn test_changelog_json_with_resolved_from() {
+        let output = ChangelogJson {
+            from: "v2.0.0".to_string(),
+            to: "HEAD".to_string(),
+            resolved_from: Some("v2.0.0".to_string()),
+            path: None,
+            commit_count: 0,
+            commits: vec![],
+        };
+
+        let json = serde_json::to_string_pretty(&output).unwrap();
+        assert!(json.contains("\"resolved_from\": \"v2.0.0\""));
+    }
+
+    #[test]
+    fn test_pick_latest_tag_returns_first() {
+        let output = "v3.0.0\nv2.0.0\nv1.0.0\n";
+        assert_eq!(pick_latest_tag(output, None).unwrap(), "v3.0.0");
+    }
+
+    #[test]
+    fn test_pick_latest_tag_with_prefix() {
+        let output = "release/android/v2.0.0\nrelease/ios/v1.1.0\nrelease/ios/v1.0.0\nrelease/android/v1.0.0\n";
+        assert_eq!(
+            pick_latest_tag(output, Some("release/ios")).unwrap(),
+            "release/ios/v1.1.0"
+        );
+    }
+
+    #[test]
+    fn test_pick_latest_tag_prefix_no_match() {
+        let output = "release/android/v1.0.0\nv1.0.0\n";
+        let err = pick_latest_tag(output, Some("release/ios")).unwrap_err();
+        assert!(err.to_string().contains("release/ios"));
+    }
+
+    #[test]
+    fn test_pick_latest_tag_empty_output() {
+        let err = pick_latest_tag("", None).unwrap_err();
+        assert!(err.to_string().contains("No tags found"));
+    }
+
+    #[test]
+    fn test_pick_latest_tag_whitespace_only() {
+        let err = pick_latest_tag("  \n  \n", None).unwrap_err();
+        assert!(err.to_string().contains("No tags found"));
     }
 }

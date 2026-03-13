@@ -74,12 +74,24 @@ Or pass `--agent` directly to skip config.
 ## Changelog generation
 
 ```bash
-st changelog v1.0.0
-st changelog v1.0.0 v2.0.0
-st changelog abc123 def456
+st changelog                      # Auto-detect last tag → HEAD
+st changelog v1.0.0               # Explicit from ref → HEAD
+st changelog v1.0.0 v2.0.0       # Between two explicit refs
+st changelog abc123 def456        # Between two commits
 ```
 
-### Monorepo filtering
+### Tag prefix (monorepo releases)
+
+In a monorepo with tags like `release/ios/v1.2.0` and `release/android/v3.0.0`,
+use `--tag-prefix` to pick the latest tag matching a platform:
+
+```bash
+st changelog --tag-prefix release/ios
+st changelog --tag-prefix release/android
+st changelog --tag-prefix release/android --json
+```
+
+### Path filtering
 
 ```bash
 st changelog v1.0.0 --path apps/frontend
@@ -90,6 +102,7 @@ st changelog v1.0.0 --path packages/shared-utils
 
 ```bash
 st changelog v1.0.0 --json
+st changelog --json               # Auto-resolved tag appears in "resolved_from"
 ```
 
 PR numbers are extracted from squash-merge commit messages like `(#123)`.

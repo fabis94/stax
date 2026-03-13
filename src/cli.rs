@@ -611,11 +611,13 @@ enum Commands {
 
     /// Generate changelog between two refs
     Changelog {
-        /// Starting ref (tag, branch, or commit)
-        from: String,
+        /// Starting ref (tag, branch, or commit). Defaults to last tag if omitted.
+        from: Option<String>,
         /// Ending ref (defaults to HEAD)
-        #[arg(default_value = "HEAD")]
-        to: String,
+        to: Option<String>,
+        /// Only consider tags matching this prefix when auto-resolving (e.g. release/ios)
+        #[arg(long)]
+        tag_prefix: Option<String>,
         /// Filter commits to those touching this path
         #[arg(long)]
         path: Option<String>,
@@ -1318,9 +1320,10 @@ pub fn run() -> Result<()> {
         Commands::Changelog {
             from,
             to,
+            tag_prefix,
             path,
             json,
-        } => commands::changelog::run(from, to, path, json),
+        } => commands::changelog::run(from, to.unwrap_or_else(|| "HEAD".to_string()), tag_prefix, path, json),
         Commands::Rename {
             name,
             edit,
