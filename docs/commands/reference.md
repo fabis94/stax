@@ -108,7 +108,7 @@
 | `st copy --pr` | Copy PR URL |
 | `st standup` | Show recent activity |
 | `st standup --summary` | AI-generated spoken standup update |
-| `st standup --summary --jit` | Include Jira `jit` context for in-flight and next-up work |
+| `st standup --summary --jit` | Include Jira `jit` context for in-flight and next-up work ([jit repo](https://github.com/cesarferreira/jit)) |
 | `st changelog [from] [to]` | Generate changelog (auto-resolves last tag if `from` omitted) |
 | `st generate --pr-body [--no-prompt]` | Generate PR body with AI |
 | `st demo` | Interactive tutorial (no auth/repo needed) |

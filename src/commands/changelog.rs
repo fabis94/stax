@@ -156,12 +156,6 @@ pub fn run(
     }
 
     // Pretty output
-    if auto_resolved {
-        println!(
-            "{}",
-            format!("(resolved to latest tag: {})", from).dimmed()
-        );
-    }
     print_changelog(&from, &to, &resolved_path, &commits);
 
     Ok(())

@@ -31,6 +31,8 @@ When `--jit` is enabled, standup also inspects your current Jira sprint via the 
 - tickets that already have PRs in flight
 - likely next backlog tickets without PRs yet
 
+Install or learn more about `jit`: <https://github.com/cesarferreira/jit>
+
 The summary is word-wrapped and displayed in a card that fits your terminal width:
 
 ```
@@ -62,6 +64,7 @@ st standup --summary --jit             # Add Jira context via jit
 ### Prerequisites
 
 - An AI agent installed and on `PATH`: `claude`, `codex`, `gemini`, or `opencode`
+- For `--jit`, install [`jit`](https://github.com/cesarferreira/jit) and make sure it is on `PATH`
 - Agent configured in `~/.config/stax/config.toml`:
 
 ```toml

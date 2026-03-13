@@ -579,7 +579,7 @@ enum Commands {
         /// Summarize standup using AI agent
         #[arg(long)]
         summary: bool,
-        /// Include Jira sprint context from `jit` (tickets with PRs + next backlog items)
+        /// Include Jira sprint context from `jit` (https://github.com/cesarferreira/jit)
         #[arg(long)]
         jit: bool,
         /// AI agent to use (claude, codex, gemini, opencode). Defaults to config or auto-detect

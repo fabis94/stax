@@ -40,7 +40,6 @@ fn test_changelog_from_last_tag() {
 
     let stdout = TestRepo::stdout(&output);
     assert!(stdout.contains("feat: add c"));
-    assert!(stdout.contains("resolved to latest tag"));
 }
 
 #[test]
