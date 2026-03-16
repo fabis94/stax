@@ -99,8 +99,8 @@ stax worktree list             # List all worktrees (* = current)
 stax worktree go <name>        # Navigate to a worktree (requires shell integration)
 stax worktree path <name>      # Print absolute path of a worktree (for scripting)
 stax worktree remove <name>    # Remove a worktree
-stax shell-setup               # Print shell integration snippet
-stax shell-setup --install     # Auto-install shell integration to ~/.zshrc etc.
+stax shell-setup               # Print shell integration snippet for manual install
+stax shell-setup --install     # Write shell integration under ~/.config/stax and source it from your shell config
 
 # Worktree shortcuts
 stax wt                        # Alias for worktree subcommand
@@ -458,7 +458,7 @@ Symbols:
 7. Use `stax agent create` to give each AI agent its own isolated worktree — prevents agents from conflicting on the same files.
 8. After trunk moves, run `stax agent sync` once instead of rebasing each agent worktree manually.
 9. Use `stax worktree create` (not `stax agent create`) when you want a worktree for an existing branch or for human parallel development — no registry, no editor overhead.
-10. Run `stax shell-setup --install` once per machine to enable `stax worktree go` and the `sw` alias.
+10. Run `stax shell-setup --install` once per machine to enable `stax worktree go` and the `sw` alias without executing `stax` on every shell startup.
 
 ## Tips
 

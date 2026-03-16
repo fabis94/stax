@@ -83,6 +83,8 @@ st shell-setup
 st shell-setup --install
 ```
 
+`st shell-setup --install` writes a static shell snippet under `~/.config/stax/` and adds a `source ... # stax shell-setup` line to your shell config, so opening a new shell does not execute `stax`.
+
 After installation, both `st` and `stax` transparently handle:
 
 - `st wt c ...`

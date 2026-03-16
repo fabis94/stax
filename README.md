@@ -198,7 +198,7 @@ Work on multiple stacks in parallel without losing context. `st worktree` (alias
 
 ```bash
 # One-time shell integration setup
-st shell-setup --install   # appends eval "$(stax shell-setup)" to ~/.zshrc
+st shell-setup --install   # writes ~/.config/stax/shell-setup.sh and sources it from ~/.zshrc
 
 # Create a fresh random lane or a named lane
 st worktree create

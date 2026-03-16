@@ -697,10 +697,10 @@ enum Commands {
     #[command(subcommand, visible_alias = "wt")]
     Worktree(WorktreeCommands),
 
-    /// Output shell integration snippet (add to shell config: eval "$(stax shell-setup)")
+    /// Output shell integration snippet for manual install or use `--install`
     #[command(name = "shell-setup")]
     ShellSetup {
-        /// Auto-append to your shell config file (~/.zshrc, ~/.bashrc, etc.)
+        /// Write shell integration under ~/.config/stax and source it from your shell config
         #[arg(long)]
         install: bool,
     },
@@ -1122,6 +1122,12 @@ pub fn run() -> Result<()> {
             update::check_in_background();
             return result;
         }
+        Commands::ShellSetup { install } => {
+            let result = commands::shell_setup::run(*install);
+            update::show_update_notification();
+            update::check_in_background();
+            return result;
+        }
         _ => {}
     }
 
@@ -1497,7 +1503,9 @@ pub fn run() -> Result<()> {
             WorktreeCommands::Prune => commands::worktree::prune::run(),
             WorktreeCommands::Restack => commands::worktree::restack::run(),
         },
-        Commands::ShellSetup { install } => commands::shell_setup::run(install),
+        Commands::ShellSetup { .. } => {
+            unreachable!("shell-setup returns before repo initialization")
+        }
         // Hidden worktree shortcuts
         Commands::W => commands::worktree::list::run(false),
         Commands::Wtc {

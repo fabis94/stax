@@ -125,8 +125,8 @@
 | `st worktree remove [name]` | `wt rm`, `wtrm` | Remove a worktree (`wt rm` with no name removes the current lane) |
 | `st worktree prune` | `wt prune`, `wtprune` | Clean stale git worktree bookkeeping only |
 | `st worktree restack` | `wt rs`, `wtrs` | Restack all stax-managed worktrees |
-| `st shell-setup` | | Print shell integration snippet for `eval` |
-| `st shell-setup --install` | | Auto-append shell integration to your shell config |
+| `st shell-setup` | | Print shell integration snippet for manual install |
+| `st shell-setup --install` | | Write shell integration under `~/.config/stax/` and source it from your shell config |
 
 Worktree launch examples:
 - `st wt c review-pass --agent codex --tmux -- "address PR comments"`
