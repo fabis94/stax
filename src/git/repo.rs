@@ -68,6 +68,13 @@ impl GitRepo {
         Ok(Self { repo })
     }
 
+    /// Open the repository from a known repository path without rediscovering the cwd.
+    pub fn open_from_path(path: &Path) -> Result<Self> {
+        let repo = Repository::open(path)
+            .with_context(|| format!("Failed to open git repository at '{}'", path.display()))?;
+        Ok(Self { repo })
+    }
+
     /// Get the repository root path
     pub fn workdir(&self) -> Result<&Path> {
         self.repo
@@ -1744,6 +1751,27 @@ mod tests {
         let result = RebaseResult::Conflict;
         let debug_str = format!("{:?}", result);
         assert!(debug_str.contains("Conflict"));
+    }
+
+    #[test]
+    fn test_open_from_path_opens_repo_from_git_dir() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path();
+
+        run_git(path, &["init", "-b", "main"]);
+        run_git(path, &["config", "user.email", "test@example.com"]);
+        run_git(path, &["config", "user.name", "Test User"]);
+
+        fs::write(path.join("README.md"), "base\n").expect("write readme");
+        run_git(path, &["add", "README.md"]);
+        run_git(path, &["commit", "-m", "Initial commit"]);
+
+        let repo = GitRepo::open_from_path(&path.join(".git")).expect("open repo from git dir");
+        assert_eq!(
+            std::fs::canonicalize(repo.workdir().expect("repo workdir"))
+                .expect("canonical workdir"),
+            std::fs::canonicalize(path).expect("canonical temp repo path")
+        );
     }
 
     #[test]

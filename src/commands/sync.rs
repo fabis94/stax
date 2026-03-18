@@ -34,7 +34,8 @@ pub fn run(
     let repo = GitRepo::open()?;
     let stack = Stack::load(&repo)?;
     let current = repo.current_branch()?;
-    let workdir = repo.workdir()?;
+    let workdir = repo.workdir()?.to_path_buf();
+    let reopen_repo_path = repo.git_dir()?.to_path_buf();
     let config = Config::load()?;
     let remote_name = config.remote_name().to_string();
     let remote_trunk_ref = format!("{}/{}", remote_name, stack.trunk);
@@ -90,7 +91,7 @@ pub fn run(
     };
     let output = Command::new("git")
         .args(&fetch_args)
-        .current_dir(workdir)
+        .current_dir(&workdir)
         .output()
         .context("Failed to fetch")?;
     step_timings.push((format!("fetch {}", remote_name), fetch_started_at.elapsed()));
@@ -131,7 +132,7 @@ pub fn run(
 
         let output = Command::new("git")
             .args(["merge", "--ff-only", &remote_trunk_ref])
-            .current_dir(workdir)
+            .current_dir(&workdir)
             .output()
             .context("Failed to fast-forward trunk")?;
 
@@ -159,7 +160,7 @@ pub fn run(
             // Try reset to remote
             let reset_output = Command::new("git")
                 .args(["reset", "--hard", &remote_trunk_ref])
-                .current_dir(workdir)
+                .current_dir(&workdir)
                 .output()
                 .context("Failed to reset trunk")?;
 
@@ -225,7 +226,7 @@ pub fn run(
             // Resolve the two SHAs so we can give an accurate status message.
             let local_sha = Command::new("git")
                 .args(["rev-parse", &stack.trunk])
-                .current_dir(workdir)
+                .current_dir(&workdir)
                 .output()
                 .ok()
                 .filter(|o| o.status.success())
@@ -233,7 +234,7 @@ pub fn run(
 
             let remote_sha = Command::new("git")
                 .args(["rev-parse", &remote_trunk_ref])
-                .current_dir(workdir)
+                .current_dir(&workdir)
                 .output()
                 .ok()
                 .filter(|o| o.status.success())
@@ -253,7 +254,7 @@ pub fn run(
                             &stack.trunk,
                             &remote_trunk_ref,
                         ])
-                        .current_dir(workdir)
+                        .current_dir(&workdir)
                         .status()
                         .map(|s| s.success())
                         .unwrap_or(false);
@@ -265,7 +266,7 @@ pub fn run(
                                 &format!("refs/heads/{}", stack.trunk),
                                 &format!("refs/remotes/{}/{}", remote_name, stack.trunk),
                             ])
-                            .current_dir(workdir)
+                            .current_dir(&workdir)
                             .output()
                             .context("Failed to fast-forward local trunk ref")?;
 
@@ -307,10 +308,10 @@ pub fn run(
     ));
 
     // 3. Delete merged branches
-    if delete_merged {
+    let repo = if delete_merged {
         let detect_merged_started_at = Instant::now();
         let detect_timer = LiveTimer::maybe_new(!quiet, "Detect merged branches");
-        let merged = find_merged_branches(&repo, workdir, &stack, &remote_name)?;
+        let merged = find_merged_branches(&repo, &workdir, &stack, &remote_name)?;
         step_timings.push((
             "detect merged branches".to_string(),
             detect_merged_started_at.elapsed(),
@@ -318,7 +319,8 @@ pub fn run(
         LiveTimer::maybe_finish_timed(detect_timer);
 
         let delete_merged_started_at = Instant::now();
-        let repo = GitRepo::open()?;
+        drop(repo);
+        let repo = GitRepo::open_from_path(&reopen_repo_path)?;
 
         // Lazy-initialize GitHub client for updating PR bases (only if needed)
         let github_client: Option<(tokio::runtime::Runtime, GitHubClient)> = {
@@ -377,8 +379,8 @@ pub fn run(
                     .and_then(|b| b.parent.clone())
                     .unwrap_or_else(|| stack.trunk.clone());
                 let (parent_branch, parent_fallback_from) =
-                    resolve_effective_parent(workdir, &recorded_parent_branch, &stack.trunk);
-                let parent_exists_locally = local_branch_exists(workdir, &parent_branch);
+                    resolve_effective_parent(&workdir, &recorded_parent_branch, &stack.trunk);
+                let parent_exists_locally = local_branch_exists(&workdir, &parent_branch);
 
                 if !quiet {
                     if let Some(missing_parent) = &parent_fallback_from {
@@ -426,7 +428,7 @@ pub fn run(
                 if confirm {
                     // If we're on this branch, checkout parent first
                     if is_current_branch {
-                        match checkout_branch_for_cleanup(&repo, workdir, &parent_branch) {
+                        match checkout_branch_for_cleanup(&repo, &workdir, &parent_branch) {
                             Ok(()) => {
                                 if !quiet {
                                     println!(
@@ -439,7 +441,7 @@ pub fn run(
                                 // Pull latest changes for the parent branch
                                 let pull_status = Command::new("git")
                                     .args(["pull", "--ff-only", &remote_name, &parent_branch])
-                                    .current_dir(workdir)
+                                    .current_dir(&workdir)
                                     .stdout(std::process::Stdio::null())
                                     .stderr(std::process::Stdio::null())
                                     .status();
@@ -540,7 +542,7 @@ pub fn run(
                     // Delete local branch (force delete since we confirmed)
                     let local_output = Command::new("git")
                         .args(["branch", "-D", branch])
-                        .current_dir(workdir)
+                        .current_dir(&workdir)
                         .output();
 
                     let (local_deleted, local_worktree_blocked) = match local_output {
@@ -554,7 +556,7 @@ pub fn run(
                     // Delete remote branch
                     let remote_status = Command::new("git")
                         .args(["push", &remote_name, "--delete", branch])
-                        .current_dir(workdir)
+                        .current_dir(&workdir)
                         .stdout(std::process::Stdio::null())
                         .stderr(std::process::Stdio::null())
                         .status();
@@ -562,7 +564,7 @@ pub fn run(
                     let remote_deleted = remote_status.map(|s| s.success()).unwrap_or(false);
 
                     // Only delete metadata if branch no longer exists locally.
-                    let local_still_exists = local_branch_exists(workdir, branch);
+                    let local_still_exists = local_branch_exists(&workdir, branch);
 
                     let metadata_deleted = if !local_still_exists {
                         let _ = crate::git::refs::delete_metadata(repo.inner(), branch);
@@ -634,7 +636,10 @@ pub fn run(
                 format!("{:.3}s", delete_elapsed.as_secs_f64()).dimmed()
             );
         }
-    }
+        repo
+    } else {
+        repo
+    };
 
     // Re-check current branch since it may have changed during branch deletion
     let mut current_after_deletions = repo.current_branch()?;
@@ -643,7 +648,7 @@ pub fn run(
     if delete_upstream_gone {
         let detect_gone_started_at = Instant::now();
         let detect_timer = LiveTimer::maybe_new(!quiet, "Detect upstream-gone branches");
-        let gone = find_upstream_gone_branches(workdir, &stack.trunk)?;
+        let gone = find_upstream_gone_branches(&workdir, &stack.trunk)?;
         step_timings.push((
             "detect upstream-gone branches".to_string(),
             detect_gone_started_at.elapsed(),
@@ -671,7 +676,7 @@ pub fn run(
             }
 
             for branch in &gone {
-                if !local_branch_exists(workdir, branch) {
+                if !local_branch_exists(&workdir, branch) {
                     continue;
                 }
 
@@ -705,7 +710,7 @@ pub fn run(
                 }
 
                 if is_current_branch {
-                    match checkout_branch_for_cleanup(&repo, workdir, fallback_parent) {
+                    match checkout_branch_for_cleanup(&repo, &workdir, fallback_parent) {
                         Ok(()) => {
                             current_after_deletions = fallback_parent.clone();
                             if !quiet {
@@ -735,7 +740,7 @@ pub fn run(
 
                 let local_output = Command::new("git")
                     .args(["branch", "-D", branch])
-                    .current_dir(workdir)
+                    .current_dir(&workdir)
                     .output();
 
                 let (local_deleted, local_worktree_blocked) = match local_output {
@@ -747,7 +752,7 @@ pub fn run(
                 };
 
                 // Only delete metadata if branch no longer exists locally.
-                let local_still_exists = local_branch_exists(workdir, branch);
+                let local_still_exists = local_branch_exists(&workdir, branch);
 
                 let metadata_deleted = if !local_still_exists {
                     let _ = crate::git::refs::delete_metadata(repo.inner(), branch);
@@ -805,7 +810,7 @@ pub fn run(
 
         let output = Command::new("git")
             .args(["merge", "--ff-only", &remote_trunk_ref])
-            .current_dir(workdir)
+            .current_dir(&workdir)
             .output()
             .context("Failed to fast-forward trunk")?;
 
@@ -833,7 +838,7 @@ pub fn run(
             // Try reset to remote
             let reset_output = Command::new("git")
                 .args(["reset", "--hard", &remote_trunk_ref])
-                .current_dir(workdir)
+                .current_dir(&workdir)
                 .output()
                 .context("Failed to reset trunk")?;
 

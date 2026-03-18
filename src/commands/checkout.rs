@@ -20,6 +20,7 @@ const COLUMN_COLORS: &[Color] = &[
     Color::BrightMagenta,
     Color::BrightBlue,
 ];
+const LINKED_WORKTREE_GLYPH: &str = "↳";
 
 /// Represents a branch in the display with its column position
 struct DisplayBranch {
@@ -123,7 +124,7 @@ pub fn run(branch: Option<String>, trunk: bool, parent: bool, child: Option<usiz
                     .unwrap_or(0);
 
                 let selection = FuzzySelect::with_theme(&theme)
-                    .with_prompt("Checkout a branch (autocomplete or arrow keys)")
+                    .with_prompt("Checkout a branch (type to filter)")
                     .items(&items)
                     .default(default_index)
                     .highlight_matches(false) // Disabled - conflicts with ANSI colors
@@ -151,6 +152,13 @@ pub fn run(branch: Option<String>, trunk: bool, parent: bool, child: Option<usiz
 fn build_checkout_rows(stack: &Stack, repo: &GitRepo, current: &str) -> Result<Vec<CheckoutRow>> {
     let workdir = repo.workdir()?;
     let config = Config::load()?;
+    let linked_worktrees_by_branch: HashSet<String> = repo
+        .list_worktrees()?
+        .into_iter()
+        .filter(|worktree| !worktree.is_main && !worktree.is_prunable)
+        .filter_map(|worktree| worktree.branch)
+        .collect();
+    let show_worktree_column = !linked_worktrees_by_branch.is_empty();
 
     let trunk_info = stack.branches.get(&stack.trunk);
     let trunk_children: Vec<String> = trunk_info
@@ -193,6 +201,7 @@ fn build_checkout_rows(stack: &Stack, repo: &GitRepo, current: &str) -> Result<V
         let needs_restack = entry.map(|b| b.needs_restack).unwrap_or(false);
         let has_pr = entry.and_then(|b| b.pr_number).is_some();
         let has_remote = remote_branch_exists(workdir, config.remote_name(), branch) || has_pr;
+        let has_linked_worktree = linked_worktrees_by_branch.contains(branch);
 
         let prev_branch_col = if i > 0 {
             Some(display_branches[i - 1].column)
@@ -224,13 +233,8 @@ fn build_checkout_rows(stack: &Stack, repo: &GitRepo, current: &str) -> Result<V
             visual_width += 1;
         }
 
-        let mut info_str = String::new();
-        info_str.push(' ');
-        if has_remote {
-            info_str.push_str(&format!("{} ", "☁️".bright_blue()));
-        } else {
-            info_str.push_str("   ");
-        }
+        let mut info_str =
+            render_presence_markers(has_remote, show_worktree_column, has_linked_worktree);
 
         let branch_color = COLUMN_COLORS[db.column % COLUMN_COLORS.len()];
         if is_current {
@@ -290,13 +294,11 @@ fn build_checkout_rows(stack: &Stack, repo: &GitRepo, current: &str) -> Result<V
         trunk_visual_width += 1;
     }
 
-    let mut trunk_info = String::new();
-    trunk_info.push(' ');
-    if remote_branch_exists(workdir, config.remote_name(), &stack.trunk) {
-        trunk_info.push_str(&format!("{} ", "☁️".bright_blue()));
-    } else {
-        trunk_info.push_str("   ");
-    }
+    let mut trunk_info = render_presence_markers(
+        remote_branch_exists(workdir, config.remote_name(), &stack.trunk),
+        show_worktree_column,
+        linked_worktrees_by_branch.contains(&stack.trunk),
+    );
     if is_trunk_current {
         trunk_info.push_str(&format!("{}", stack.trunk.color(trunk_color).bold()));
     } else {
@@ -325,6 +327,30 @@ fn build_checkout_rows(stack: &Stack, repo: &GitRepo, current: &str) -> Result<V
     });
 
     Ok(rows)
+}
+
+fn render_presence_markers(
+    has_remote: bool,
+    show_worktree_column: bool,
+    has_linked_worktree: bool,
+) -> String {
+    let mut info_str = String::new();
+    info_str.push(' ');
+    if has_remote {
+        info_str.push_str(&format!("{} ", "☁️".bright_blue()));
+    } else {
+        info_str.push_str("   ");
+    }
+
+    if show_worktree_column {
+        if has_linked_worktree {
+            info_str.push_str(&format!("{} ", LINKED_WORKTREE_GLYPH.bright_cyan()));
+        } else {
+            info_str.push_str("  ");
+        }
+    }
+
+    info_str
 }
 
 fn remote_branch_exists(workdir: &Path, remote_name: &str, branch: &str) -> bool {
@@ -416,6 +442,7 @@ fn collect_recursive(
 mod tests {
     use super::*;
     use crate::engine::stack::StackBranch;
+    use regex::Regex;
     use std::collections::HashMap;
 
     fn test_stack() -> Stack {
@@ -543,5 +570,24 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("Cycle detected in stack metadata"));
+    }
+
+    fn strip_ansi(s: &str) -> String {
+        Regex::new(r"\x1b\[[0-9;]*m")
+            .expect("valid ANSI regex")
+            .replace_all(s, "")
+            .into_owned()
+    }
+
+    #[test]
+    fn test_render_presence_markers_aligns_worktree_column() {
+        assert_eq!(
+            strip_ansi(&render_presence_markers(true, true, true)),
+            " ☁️ ↳ "
+        );
+        assert_eq!(
+            strip_ansi(&render_presence_markers(false, true, false)),
+            "      "
+        );
     }
 }
