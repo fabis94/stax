@@ -1,6 +1,6 @@
 [package]
 name = "stax"
-version = "0.32.0"
+version = "0.33.0"
 edition = "2021"
 default-run = "stax"
 description = "Fast stacked Git branches and PRs"
@@ -39,10 +39,10 @@ serde_json = "1"
 dialoguer = { version = "0.12", features = ["fuzzy-select", "editor"] }
 console = "0.16"
 colored = "3"
-indicatif = "0.17"
-ratatui = "0.29"
-crossterm = "0.28"
-termimad = "0.31"
+indicatif = "0.18"
+ratatui = "0.30"
+crossterm = "0.29"
+termimad = "0.34"
 
 # Error handling
 anyhow = "1"
@@ -57,7 +57,7 @@ openssl = { version = "0.10", features = ["vendored"] }
 regex = "1"
 
 # Config
-toml = "0.9"
+toml = "1"
 dirs = "6"
 chrono = "0.4"
 
@@ -66,9 +66,13 @@ update-informer = "1"
 
 # Temp files
 tempfile = "3"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+
+# TLS crypto provider (needed to install default provider for tests using octocrab)
+rustls = { version = "0.23", features = ["aws_lc_rs"] }
 
 [dev-dependencies]
 tempfile = "3"
+serde_json = "1"
 wiremock = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

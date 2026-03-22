@@ -39,7 +39,12 @@ pub(crate) fn normalize_scope_parents_for_restack(
             continue;
         }
 
-        let old_parent_boundary = parent_tip.unwrap_or_else(|| meta.parent_branch_revision.clone());
+        // Only use the parent's current tip when it is actually in the
+        // child's ancestry.  If the parent was rebased its tip may have moved
+        // out of the child's commit graph (#120).
+        let old_parent_boundary = parent_tip
+            .filter(|tip| repo.is_ancestor(tip, branch).unwrap_or(false))
+            .unwrap_or_else(|| meta.parent_branch_revision.clone());
         let updated_meta = BranchMetadata {
             parent_branch_name: trunk.clone(),
             parent_branch_revision: old_parent_boundary,

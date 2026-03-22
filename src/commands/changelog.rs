@@ -246,26 +246,23 @@ fn print_changelog(from: &str, to: &str, path: &Option<String>, commits: &[Commi
 
     for commit in commits {
         let hash = &commit.short_hash;
-        let pr_str = commit
-            .pr_number
-            .map(|n| format!("#{}", n))
-            .unwrap_or_else(|| "     ".to_string()); // Empty space if no PR
 
-        // Clean message (remove PR number suffix for cleaner display)
+        let pr_col = if let Some(n) = commit.pr_number {
+            let raw = format!("{:<width$}", format!("#{}", n), width = max_pr_width);
+            raw.bright_magenta().to_string()
+        } else {
+            let raw = " ".repeat(max_pr_width);
+            raw.dimmed().to_string()
+        };
+
         let clean_message = remove_pr_suffix(&commit.message);
 
-        // Format: hash  pr_number  message (author)
         println!(
-            "  {} {:width$} {} {}",
+            "    {} {} {} {}",
             hash.bright_yellow(),
-            if commit.pr_number.is_some() {
-                pr_str.bright_magenta().to_string()
-            } else {
-                pr_str.dimmed().to_string()
-            },
+            pr_col,
             clean_message,
             format!("(@{})", commit.author).cyan().dimmed(),
-            width = max_pr_width,
         );
     }
 

@@ -16,6 +16,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 /// Sync repo: pull trunk from remote, delete merged branches, optionally restack
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     restack: bool,
     prune: bool,
@@ -486,8 +487,13 @@ pub fn run(
                         if let Some(child_meta) = BranchMetadata::read(repo.inner(), child)? {
                             // Preserve the old-parent boundary so restack can run
                             // `git rebase --onto <new> <old>` precisely.
+                            // Only use the merged branch's current tip when it is
+                            // actually in the child's ancestry.  If the parent was
+                            // rebased before deletion its tip may have moved out of
+                            // the child's commit graph (#120).
                             let old_parent_boundary = merged_branch_tip
                                 .clone()
+                                .filter(|tip| repo.is_ancestor(tip, child).unwrap_or(false))
                                 .unwrap_or_else(|| child_meta.parent_branch_revision.clone());
 
                             let updated_meta = BranchMetadata {
@@ -607,6 +613,13 @@ pub fn run(
                                     "not deleted locally (checked out in another worktree)"
                                         .yellow()
                                 );
+                                if let Ok(Some(hint)) = repo.branch_delete_resolution_hint(branch) {
+                                    println!(
+                                        "    {} {}",
+                                        "↷".yellow(),
+                                        format!("To remove it, {}", hint).dimmed()
+                                    );
+                                }
                             } else {
                                 println!("    {} {}", branch.bright_black(), "skipped".dimmed());
                             }
@@ -774,6 +787,13 @@ pub fn run(
                             branch.bright_black(),
                             "not deleted locally (checked out in another worktree)".yellow()
                         );
+                        if let Ok(Some(hint)) = repo.branch_delete_resolution_hint(branch) {
+                            println!(
+                                "    {} {}",
+                                "↷".yellow(),
+                                format!("To remove it, {}", hint).dimmed()
+                            );
+                        }
                     } else {
                         println!("    {} {}", branch.bright_black(), "skipped".dimmed());
                     }
@@ -886,14 +906,15 @@ pub fn run(
         // Reload stack to use fresh metadata after sync/deletion and normalization steps.
         let restack_stack = Stack::load(&repo)?;
         let branches_to_restack: Vec<String> = scope_order
-            .into_iter()
+            .iter()
             .filter(|branch| {
                 restack_stack
                     .branches
-                    .get(branch)
+                    .get(branch.as_str())
                     .map(|br| br.needs_restack)
                     .unwrap_or(false)
             })
+            .cloned()
             .collect();
 
         if branches_to_restack.is_empty() {
@@ -903,7 +924,7 @@ pub fn run(
         } else {
             // Begin transaction for restack phase
             let mut tx = Transaction::begin(OpKind::SyncRestack, &repo, quiet)?;
-            tx.plan_branches(&repo, &branches_to_restack)?;
+            tx.plan_branches(&repo, &scope_order)?;
             let restack_count = branches_to_restack.len();
             let summary = PlanSummary {
                 branches_to_rebase: restack_count,
@@ -925,7 +946,17 @@ pub fn run(
 
             let mut summary: Vec<(String, String)> = Vec::new();
 
-            for (index, branch) in branches_to_restack.iter().enumerate() {
+            for (index, branch) in scope_order.iter().enumerate() {
+                let live_stack = Stack::load(&repo)?;
+                let needs_restack = live_stack
+                    .branches
+                    .get(branch.as_str())
+                    .map(|br| br.needs_restack)
+                    .unwrap_or(false);
+                if !needs_restack {
+                    continue;
+                }
+
                 let restack_timer = LiveTimer::maybe_new(!quiet, &format!("Restack {}", branch));
 
                 let meta = match BranchMetadata::read(repo.inner(), branch)? {
@@ -966,7 +997,7 @@ pub fn run(
                                 branch,
                                 parent_branch: &meta.parent_branch_name,
                                 completed_branches: &completed_branches,
-                                remaining_branches: branches_to_restack
+                                remaining_branches: scope_order
                                     .len()
                                     .saturating_sub(index + 1),
                                 continue_commands: &[
@@ -1046,6 +1077,7 @@ fn find_merged_branches(
 ) -> Result<Vec<String>> {
     let mut merged = Vec::new();
     let remote_trunk_ref = format!("{}/{}", remote_name, stack.trunk);
+    let remote_branches = repo.remote_branch_names(remote_name)?;
 
     // Method 1: git branch --merged (finds local branches merged into trunk)
     let output = Command::new("git")
@@ -1136,7 +1168,7 @@ fn find_merged_branches(
         }
 
         // Check if remote branch was deleted (strong signal it was merged)
-        if !remote_branch_exists(workdir, remote_name, branch) {
+        if !remote_branches.contains(branch.as_str()) {
             // Remote branch doesn't exist and had a PR - likely merged and deleted
             merged.push(branch.clone());
         }
@@ -1165,7 +1197,7 @@ fn find_merged_branches(
         }
 
         let local_exists = local_branches.contains(branch);
-        let remote_exists = remote_branch_exists(workdir, remote_name, branch);
+        let remote_exists = remote_branches.contains(branch.as_str());
 
         // If branch doesn't exist locally AND doesn't exist remotely, it's orphaned
         if !local_exists && !remote_exists {
@@ -1177,7 +1209,7 @@ fn find_merged_branches(
     // when trunk has advanced past the merge point (where a simple tree diff
     // would show false negatives). Run this last so cheaper signals resolve
     // most cases before the provenance path touches more refs.
-    for (branch, _) in &stack.branches {
+    for branch in stack.branches.keys() {
         if branch == &stack.trunk || merged.contains(branch) {
             continue;
         }
@@ -1228,16 +1260,6 @@ fn local_branch_exists(workdir: &std::path::Path, branch: &str) -> bool {
     let local_ref = format!("refs/heads/{}", branch);
     Command::new("git")
         .args(["show-ref", "--verify", "--quiet", &local_ref])
-        .current_dir(workdir)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-fn remote_branch_exists(workdir: &std::path::Path, remote_name: &str, branch: &str) -> bool {
-    let remote_ref = format!("refs/remotes/{}/{}", remote_name, branch);
-    Command::new("git")
-        .args(["show-ref", "--verify", "--quiet", &remote_ref])
         .current_dir(workdir)
         .status()
         .map(|s| s.success())

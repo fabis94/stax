@@ -1525,6 +1525,102 @@ fn test_restack_cleanup_reparents_children_before_deleting_merged_parent() {
 }
 
 #[test]
+fn test_restack_cleanup_only_considers_stax_tracked_branches() {
+    let repo = TestRepo::new();
+
+    // Create a stax-tracked branch that needs restack (so cleanup path runs).
+    repo.run_stax(&["bc", "tracked-branch"]);
+    repo.create_file("tracked.txt", "tracked");
+    repo.commit("Tracked commit");
+
+    // Create an untracked local branch manually (not via stax) and merge it into main.
+    repo.git(&["checkout", "main"]);
+    repo.git(&["checkout", "-b", "untracked-merged"]);
+    repo.create_file("untracked.txt", "untracked");
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-m", "Untracked commit"]);
+    repo.git(&["checkout", "main"]);
+    repo.git(&[
+        "merge",
+        "--no-ff",
+        "untracked-merged",
+        "-m",
+        "Merge untracked",
+    ]);
+
+    // Make tracked-branch need restack by advancing main.
+    repo.create_file("main-update.txt", "main update");
+    repo.commit("Main update");
+    repo.run_stax(&["checkout", "tracked-branch"]);
+
+    let output = repo.run_stax(&["restack", "--yes"]);
+    assert!(
+        output.status.success(),
+        "restack failed\nstdout: {}\nstderr: {}",
+        TestRepo::stdout(&output),
+        TestRepo::stderr(&output)
+    );
+
+    let branches = repo.list_branches();
+    assert!(
+        branches.iter().any(|b| b == "untracked-merged"),
+        "Cleanup should not touch branches that are not tracked by stax"
+    );
+}
+
+#[test]
+fn test_restack_cleanup_excludes_checked_out_branch() {
+    let repo = TestRepo::new();
+
+    // Stack: main -> merged-branch -> child-branch
+    repo.run_stax(&["bc", "merged-branch"]);
+    repo.create_file("merged.txt", "merged");
+    repo.commit("Merged commit");
+
+    repo.run_stax(&["bc", "child-branch"]);
+    repo.create_file("child.txt", "child");
+    repo.commit("Child commit");
+
+    // Merge merged-branch into main so cleanup will consider it.
+    repo.run_stax(&["t"]);
+    repo.git(&[
+        "merge",
+        "--no-ff",
+        "merged-branch",
+        "-m",
+        "Merge merged-branch",
+    ]);
+
+    // Create another branch that needs restack so cleanup path runs.
+    repo.run_stax(&["bc", "trigger-branch"]);
+    repo.create_file("trigger.txt", "trigger");
+    repo.commit("Trigger commit");
+
+    // Advance main so trigger-branch needs restack.
+    repo.run_stax(&["t"]);
+    repo.create_file("main-update.txt", "main update");
+    repo.commit("Main update");
+
+    // Checkout the merged branch — it should be excluded from cleanup.
+    repo.run_stax(&["checkout", "merged-branch"]);
+    assert_eq!(repo.current_branch(), "merged-branch");
+
+    let output = repo.run_stax(&["restack", "--yes"]);
+    assert!(
+        output.status.success(),
+        "restack failed\nstdout: {}\nstderr: {}",
+        TestRepo::stdout(&output),
+        TestRepo::stderr(&output)
+    );
+
+    let branches = repo.list_branches();
+    assert!(
+        branches.iter().any(|b| b == "merged-branch"),
+        "Cleanup should not delete the currently checked-out branch even if it is merged"
+    );
+}
+
+#[test]
 fn test_restack_all_flag() {
     let repo = TestRepo::new();
 
@@ -4359,6 +4455,213 @@ fn test_sync_restack_handles_squash_merged_parent_after_trunk_advances() {
     );
 }
 
+/// Regression test for issue #118: `sync --restack` must restack the entire
+/// stack, not just the first stale branch.  With a 3-level stack
+/// `main <- A <- B <- C`, squash-merging A and running sync --restack should
+/// restack both B (onto main) and C (onto the updated B).
+#[test]
+fn test_sync_restack_restacks_full_chain_after_squash_merge() {
+    let repo = TestRepo::new_with_remote();
+
+    // Build 3-level stack: main -> branch_a -> branch_b -> branch_c
+    repo.run_stax(&["bc", "chain-a"]);
+    let branch_a = repo.current_branch();
+    repo.create_file("a.txt", "a content\n");
+    repo.commit("Commit A");
+    repo.git(&["push", "-u", "origin", &branch_a]);
+
+    repo.run_stax(&["bc", "chain-b"]);
+    let branch_b = repo.current_branch();
+    repo.create_file("b.txt", "b content\n");
+    repo.commit("Commit B");
+    repo.git(&["push", "-u", "origin", &branch_b]);
+
+    repo.run_stax(&["bc", "chain-c"]);
+    let branch_c = repo.current_branch();
+    repo.create_file("c.txt", "c content\n");
+    repo.commit("Commit C");
+    repo.git(&["push", "-u", "origin", &branch_c]);
+
+    // Squash-merge branch_a on remote and delete it
+    let remote_path = repo.remote_path().expect("No remote configured");
+    let clone_dir = test_tempdir();
+    let run_remote_git = |args: &[&str]| {
+        let output = hermetic_git_command()
+            .args(args)
+            .current_dir(clone_dir.path())
+            .output()
+            .expect("Failed to run git in remote clone");
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout: {}\nstderr: {}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    run_remote_git(&["clone", remote_path.to_str().unwrap(), "."]);
+    run_remote_git(&["checkout", "-B", "main", "origin/main"]);
+    run_remote_git(&["config", "user.email", "merger@test.com"]);
+    run_remote_git(&["config", "user.name", "Merger"]);
+    run_remote_git(&["fetch", "origin", &branch_a]);
+    run_remote_git(&["merge", "--squash", &format!("origin/{}", branch_a)]);
+    run_remote_git(&["commit", "-m", "Squash merge A"]);
+    run_remote_git(&["push", "origin", "main"]);
+    run_remote_git(&["push", "origin", "--delete", &branch_a]);
+
+    // Check out branch_c (top of the stack) and run sync --restack
+    repo.run_stax(&["checkout", &branch_c]);
+
+    let output = repo.run_stax(&["sync", "--restack", "--force"]);
+    assert!(
+        output.status.success(),
+        "sync --restack failed\nstdout: {}\nstderr: {}",
+        TestRepo::stdout(&output),
+        TestRepo::stderr(&output)
+    );
+    assert!(
+        !TestRepo::stdout(&output).contains("conflict"),
+        "Expected no conflict during sync --restack.\nstdout: {}",
+        TestRepo::stdout(&output)
+    );
+
+    // branch_a should be cleaned up
+    let branches = repo.list_branches();
+    assert!(
+        !branches.iter().any(|b| b == &branch_a),
+        "Expected merged branch_a to be deleted"
+    );
+
+    // branch_b should have only its own commit relative to main
+    let count_b = repo.git(&["rev-list", "--count", &format!("main..{}", branch_b)]);
+    assert!(count_b.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&count_b.stdout).trim(),
+        "1",
+        "Expected branch_b to have 1 unique commit after restack onto main"
+    );
+
+    // branch_c should have only its own commit relative to branch_b
+    let count_c = repo.git(&[
+        "rev-list",
+        "--count",
+        &format!("{}..{}", branch_b, branch_c),
+    ]);
+    assert!(count_c.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&count_c.stdout).trim(),
+        "1",
+        "Expected branch_c to have 1 unique commit after restack onto branch_b (issue #118)"
+    );
+
+    // branch_c should also have exactly 2 unique commits relative to main (B + C)
+    let count_c_main = repo.git(&["rev-list", "--count", &format!("main..{}", branch_c)]);
+    assert!(count_c_main.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&count_c_main.stdout).trim(),
+        "2",
+        "Expected branch_c to have 2 unique commits relative to main after full restack"
+    );
+}
+
+/// Regression test for issue #120: after a squash-merged parent is rebased then
+/// deleted in a two-step sync, child branches must not retain ghost commits.
+/// The scenario is:
+///   1. main ← A (3 commits) ← B (1 commit)
+///   2. Squash-merge A on remote, delete remote branch
+///   3. First `sync --restack`: rebases A onto main (A absorbed into main)
+///   4. Second `sync --restack`: detects A as merged, deletes it, reparents B → main
+///   5. B must have only its OWN commit relative to main (no ghost commits from A)
+#[test]
+fn test_sync_restack_no_ghost_commits_after_two_step_squash_merge() {
+    let repo = TestRepo::new_with_remote();
+
+    // Build stack: main -> branch_a (3 commits) -> branch_b (1 commit)
+    repo.run_stax(&["bc", "ghost-parent"]);
+    let branch_a = repo.current_branch();
+    repo.create_file("a1.txt", "a1\n");
+    repo.commit("A commit 1");
+    repo.create_file("a2.txt", "a2\n");
+    repo.commit("A commit 2");
+    repo.create_file("a3.txt", "a3\n");
+    repo.commit("A commit 3");
+    repo.git(&["push", "-u", "origin", &branch_a]);
+
+    repo.run_stax(&["bc", "ghost-child"]);
+    let branch_b = repo.current_branch();
+    repo.create_file("b1.txt", "b1\n");
+    repo.commit("B commit 1");
+    repo.git(&["push", "-u", "origin", &branch_b]);
+
+    // Squash-merge A on remote and delete the remote branch
+    let remote_path = repo.remote_path().expect("No remote configured");
+    let clone_dir = test_tempdir();
+    let run_remote_git = |args: &[&str]| {
+        let output = hermetic_git_command()
+            .args(args)
+            .current_dir(clone_dir.path())
+            .output()
+            .expect("Failed to run git in remote clone");
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout: {}\nstderr: {}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    run_remote_git(&["clone", remote_path.to_str().unwrap(), "."]);
+    run_remote_git(&["checkout", "-B", "main", "origin/main"]);
+    run_remote_git(&["config", "user.email", "merger@test.com"]);
+    run_remote_git(&["config", "user.name", "Merger"]);
+    run_remote_git(&["fetch", "origin", &branch_a]);
+    run_remote_git(&["merge", "--squash", &format!("origin/{}", branch_a)]);
+    run_remote_git(&["commit", "-m", "Squash merge A (3 commits)"]);
+    run_remote_git(&["push", "origin", "main"]);
+    run_remote_git(&["push", "origin", "--delete", &branch_a]);
+
+    // First sync --restack: A may get rebased onto main (absorbed), or detected
+    // as merged.  Either way this is the first step of the two-step scenario.
+    repo.run_stax(&["checkout", &branch_b]);
+    let output1 = repo.run_stax(&["sync", "--restack", "--force"]);
+    assert!(
+        output1.status.success(),
+        "First sync --restack failed\nstdout: {}\nstderr: {}",
+        TestRepo::stdout(&output1),
+        TestRepo::stderr(&output1)
+    );
+
+    // Second sync --restack: picks up any remaining reparent/delete/restack
+    let output2 = repo.run_stax(&["sync", "--restack", "--force"]);
+    assert!(
+        output2.status.success(),
+        "Second sync --restack failed\nstdout: {}\nstderr: {}",
+        TestRepo::stdout(&output2),
+        TestRepo::stderr(&output2)
+    );
+
+    // branch_a should be cleaned up by now
+    let branches = repo.list_branches();
+    assert!(
+        !branches.iter().any(|b| b == &branch_a),
+        "Expected merged branch_a to be deleted, branches: {:?}",
+        branches
+    );
+
+    // KEY ASSERTION: B should have only its own 1 commit relative to main.
+    // If ghost commits from A remain, this count would be > 1.
+    let count_b = repo.git(&["rev-list", "--count", &format!("main..{}", branch_b)]);
+    assert!(count_b.status.success());
+    let unique_commits = String::from_utf8_lossy(&count_b.stdout)
+        .trim()
+        .to_string();
+    assert_eq!(
+        unique_commits, "1",
+        "Expected branch_b to have 1 unique commit (no ghost commits from A), got {} (issue #120)",
+        unique_commits
+    );
+}
+
 // =============================================================================
 // Merge Command Tests
 // =============================================================================
@@ -4845,6 +5148,10 @@ mod github_mock_tests {
     use wiremock::matchers::{method, path, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    fn ensure_crypto_provider() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    }
+
     fn write_test_config(home: &Path, api_base_url: &str) {
         write_test_config_with_submit(home, api_base_url, None);
     }
@@ -5054,6 +5361,7 @@ mod github_mock_tests {
 
     /// Create a test repo configured to use a mock GitHub API
     async fn setup_mock_github() -> (TestRepo, MockServer) {
+        ensure_crypto_provider();
         let mock_server = MockServer::start().await;
         let repo = TestRepo::new_with_remote();
 
@@ -6284,6 +6592,7 @@ mod github_mock_tests {
 
     #[tokio::test]
     async fn test_github_api_mock_responses() {
+        ensure_crypto_provider();
         let mock_server = MockServer::start().await;
 
         // Mock fetching remote refs

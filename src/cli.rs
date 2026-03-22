@@ -25,8 +25,8 @@ struct SubmitOptions {
     /// Skip git fetch and use cached remote-tracking refs
     #[arg(long = "no-fetch", action = clap::ArgAction::SetTrue)]
     no_fetch: bool,
-    /// Skip restack check and submit anyway
-    #[arg(short, long)]
+    /// Deprecated: kept for CLI compatibility (currently a no-op)
+    #[arg(short, long, hide = true)]
     force: bool,
     /// Auto-approve prompts
     #[arg(long)]
@@ -1115,6 +1115,8 @@ fn print_subcommand_help(name: &str) -> Result<()> {
 }
 
 pub fn run() -> Result<()> {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     // Ensure config exists (creates default on first run)
     let _ = Config::ensure_exists();
 
