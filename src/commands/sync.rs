@@ -487,8 +487,13 @@ pub fn run(
                         if let Some(child_meta) = BranchMetadata::read(repo.inner(), child)? {
                             // Preserve the old-parent boundary so restack can run
                             // `git rebase --onto <new> <old>` precisely.
+                            // Only use the merged branch's current tip when it is
+                            // actually in the child's ancestry.  If the parent was
+                            // rebased before deletion its tip may have moved out of
+                            // the child's commit graph (#120).
                             let old_parent_boundary = merged_branch_tip
                                 .clone()
+                                .filter(|tip| repo.is_ancestor(tip, child).unwrap_or(false))
                                 .unwrap_or_else(|| child_meta.parent_branch_revision.clone());
 
                             let updated_meta = BranchMetadata {

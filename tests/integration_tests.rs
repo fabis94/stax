@@ -4564,6 +4564,104 @@ fn test_sync_restack_restacks_full_chain_after_squash_merge() {
     );
 }
 
+/// Regression test for issue #120: after a squash-merged parent is rebased then
+/// deleted in a two-step sync, child branches must not retain ghost commits.
+/// The scenario is:
+///   1. main ← A (3 commits) ← B (1 commit)
+///   2. Squash-merge A on remote, delete remote branch
+///   3. First `sync --restack`: rebases A onto main (A absorbed into main)
+///   4. Second `sync --restack`: detects A as merged, deletes it, reparents B → main
+///   5. B must have only its OWN commit relative to main (no ghost commits from A)
+#[test]
+fn test_sync_restack_no_ghost_commits_after_two_step_squash_merge() {
+    let repo = TestRepo::new_with_remote();
+
+    // Build stack: main -> branch_a (3 commits) -> branch_b (1 commit)
+    repo.run_stax(&["bc", "ghost-parent"]);
+    let branch_a = repo.current_branch();
+    repo.create_file("a1.txt", "a1\n");
+    repo.commit("A commit 1");
+    repo.create_file("a2.txt", "a2\n");
+    repo.commit("A commit 2");
+    repo.create_file("a3.txt", "a3\n");
+    repo.commit("A commit 3");
+    repo.git(&["push", "-u", "origin", &branch_a]);
+
+    repo.run_stax(&["bc", "ghost-child"]);
+    let branch_b = repo.current_branch();
+    repo.create_file("b1.txt", "b1\n");
+    repo.commit("B commit 1");
+    repo.git(&["push", "-u", "origin", &branch_b]);
+
+    // Squash-merge A on remote and delete the remote branch
+    let remote_path = repo.remote_path().expect("No remote configured");
+    let clone_dir = test_tempdir();
+    let run_remote_git = |args: &[&str]| {
+        let output = hermetic_git_command()
+            .args(args)
+            .current_dir(clone_dir.path())
+            .output()
+            .expect("Failed to run git in remote clone");
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout: {}\nstderr: {}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    run_remote_git(&["clone", remote_path.to_str().unwrap(), "."]);
+    run_remote_git(&["checkout", "-B", "main", "origin/main"]);
+    run_remote_git(&["config", "user.email", "merger@test.com"]);
+    run_remote_git(&["config", "user.name", "Merger"]);
+    run_remote_git(&["fetch", "origin", &branch_a]);
+    run_remote_git(&["merge", "--squash", &format!("origin/{}", branch_a)]);
+    run_remote_git(&["commit", "-m", "Squash merge A (3 commits)"]);
+    run_remote_git(&["push", "origin", "main"]);
+    run_remote_git(&["push", "origin", "--delete", &branch_a]);
+
+    // First sync --restack: A may get rebased onto main (absorbed), or detected
+    // as merged.  Either way this is the first step of the two-step scenario.
+    repo.run_stax(&["checkout", &branch_b]);
+    let output1 = repo.run_stax(&["sync", "--restack", "--force"]);
+    assert!(
+        output1.status.success(),
+        "First sync --restack failed\nstdout: {}\nstderr: {}",
+        TestRepo::stdout(&output1),
+        TestRepo::stderr(&output1)
+    );
+
+    // Second sync --restack: picks up any remaining reparent/delete/restack
+    let output2 = repo.run_stax(&["sync", "--restack", "--force"]);
+    assert!(
+        output2.status.success(),
+        "Second sync --restack failed\nstdout: {}\nstderr: {}",
+        TestRepo::stdout(&output2),
+        TestRepo::stderr(&output2)
+    );
+
+    // branch_a should be cleaned up by now
+    let branches = repo.list_branches();
+    assert!(
+        !branches.iter().any(|b| b == &branch_a),
+        "Expected merged branch_a to be deleted, branches: {:?}",
+        branches
+    );
+
+    // KEY ASSERTION: B should have only its own 1 commit relative to main.
+    // If ghost commits from A remain, this count would be > 1.
+    let count_b = repo.git(&["rev-list", "--count", &format!("main..{}", branch_b)]);
+    assert!(count_b.status.success());
+    let unique_commits = String::from_utf8_lossy(&count_b.stdout)
+        .trim()
+        .to_string();
+    assert_eq!(
+        unique_commits, "1",
+        "Expected branch_b to have 1 unique commit (no ghost commits from A), got {} (issue #120)",
+        unique_commits
+    );
+}
+
 // =============================================================================
 // Merge Command Tests
 // =============================================================================
