@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, USER_AGENT};
+use colored::Colorize;
+use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -15,8 +16,10 @@ use crate::github::pr::{
 };
 use crate::remote::{ForgeType, RemoteInfo};
 
+mod gitea;
 mod gitlab;
 
+use gitea::GiteaClient;
 use gitlab::GitLabClient;
 
 /// HTML comment marker embedded in stack comments to identify them for updates/deletion.
@@ -28,6 +31,7 @@ pub fn stack_comment_body(stack_comment: &str) -> String {
 
 #[derive(Clone, Copy)]
 pub enum AuthStyle {
+    AuthorizationToken,
     PrivateToken,
 }
 
@@ -37,6 +41,7 @@ macro_rules! dispatch {
         match $self {
             Self::GitHub(c) => c.$method($($arg),*).await,
             Self::GitLab(c) => c.$method($($arg),*).await,
+            Self::Gitea(c) => c.$method($($arg),*).await,
         }
     };
 }
@@ -45,6 +50,7 @@ macro_rules! dispatch {
 pub enum ForgeClient {
     GitHub(GitHubClient),
     GitLab(GitLabClient),
+    Gitea(GiteaClient),
 }
 
 impl ForgeClient {
@@ -56,19 +62,14 @@ impl ForgeClient {
                 remote.api_base_url.clone(),
             )?)),
             ForgeType::GitLab => Ok(Self::GitLab(GitLabClient::new(remote)?)),
-            ForgeType::Gitea => {
-                bail!(
-                    "Forge type {:?} is not yet supported. Only GitHub and GitLab are currently implemented.",
-                    remote.forge
-                )
-            }
+            ForgeType::Gitea => Ok(Self::Gitea(GiteaClient::new(remote)?)),
         }
     }
 
     pub fn api_call_stats(&self) -> Option<crate::github::client::ApiCallStats> {
         match self {
             Self::GitHub(client) => Some(client.api_call_stats()),
-            Self::GitLab(_) => None,
+            Self::GitLab(_) | Self::Gitea(_) => None,
         }
     }
 
@@ -83,6 +84,7 @@ impl ForgeClient {
         match self {
             Self::GitHub(client) => client.find_open_pr_by_head(&client.owner, branch).await,
             Self::GitLab(client) => client.find_open_pr_by_head(branch).await,
+            Self::Gitea(client) => client.find_open_pr_by_head(branch).await,
         }
     }
 
@@ -158,6 +160,7 @@ impl ForgeClient {
                     .await
             }
             Self::GitLab(client) => client.merge_pr(number, method, commit_title, sha).await,
+            Self::Gitea(client) => client.merge_pr(number, method, commit_title, sha).await,
         }
     }
 
@@ -179,41 +182,66 @@ impl ForgeClient {
                 crate::commands::ci::fetch_github_checks(repo, client, sha).await
             }
             Self::GitLab(client) => client.fetch_checks(sha).await,
+            Self::Gitea(client) => client.fetch_checks(sha).await,
         }
     }
 
     pub async fn request_reviewers(&self, number: u64, reviewers: &[String]) -> Result<()> {
         match self {
             Self::GitHub(client) => client.request_reviewers(number, reviewers).await,
-            Self::GitLab(_) => Ok(()),
+            Self::GitLab(_) | Self::Gitea(_) => {
+                if !reviewers.is_empty() {
+                    eprintln!(
+                        "{} Requesting reviewers is not yet supported for this forge — skipping.",
+                        "warn:".yellow()
+                    );
+                }
+                Ok(())
+            }
         }
     }
 
     pub async fn get_requested_reviewers(&self, number: u64) -> Result<Vec<String>> {
         match self {
             Self::GitHub(client) => client.get_requested_reviewers(number).await,
-            Self::GitLab(_) => Ok(Vec::new()),
+            Self::GitLab(_) | Self::Gitea(_) => Ok(Vec::new()),
         }
     }
 
     pub async fn add_labels(&self, number: u64, labels: &[String]) -> Result<()> {
         match self {
             Self::GitHub(client) => client.add_labels(number, labels).await,
-            Self::GitLab(_) => Ok(()),
+            Self::GitLab(_) | Self::Gitea(_) => {
+                if !labels.is_empty() {
+                    eprintln!(
+                        "{} Adding labels is not yet supported for this forge — skipping.",
+                        "warn:".yellow()
+                    );
+                }
+                Ok(())
+            }
         }
     }
 
     pub async fn add_assignees(&self, number: u64, assignees: &[String]) -> Result<()> {
         match self {
             Self::GitHub(client) => client.add_assignees(number, assignees).await,
-            Self::GitLab(_) => Ok(()),
+            Self::GitLab(_) | Self::Gitea(_) => {
+                if !assignees.is_empty() {
+                    eprintln!(
+                        "{} Adding assignees is not yet supported for this forge — skipping.",
+                        "warn:".yellow()
+                    );
+                }
+                Ok(())
+            }
         }
     }
 
     pub async fn get_current_user(&self) -> Result<String> {
         match self {
             Self::GitHub(client) => client.get_current_user().await,
-            Self::GitLab(_) => {
+            Self::GitLab(_) | Self::Gitea(_) => {
                 bail!("`stax branch track --all-prs` is currently only supported for GitHub")
             }
         }
@@ -222,7 +250,7 @@ impl ForgeClient {
     pub async fn get_user_open_prs(&self, username: &str) -> Result<Vec<OpenPrInfo>> {
         match self {
             Self::GitHub(client) => client.get_user_open_prs(username).await,
-            Self::GitLab(_) => {
+            Self::GitLab(_) | Self::Gitea(_) => {
                 bail!("`stax branch track --all-prs` is currently only supported for GitHub")
             }
         }
@@ -253,6 +281,13 @@ fn base_headers(token: &str, auth_style: AuthStyle) -> Result<HeaderMap> {
     headers.insert(USER_AGENT, HeaderValue::from_static("stax"));
     headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
     match auth_style {
+        AuthStyle::AuthorizationToken => {
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("token {}", token))
+                    .context("Invalid auth header")?,
+            );
+        }
         AuthStyle::PrivateToken => {
             headers.insert(
                 "PRIVATE-TOKEN",
@@ -293,6 +328,15 @@ async fn put_json<T: DeserializeOwned, B: Serialize>(
     body: &B,
 ) -> Result<T> {
     let response = client.put(url).json(body).send().await?;
+    parse_json_response(response).await
+}
+
+async fn patch_json<T: DeserializeOwned, B: Serialize>(
+    client: &Client,
+    url: &str,
+    body: &B,
+) -> Result<T> {
+    let response = client.patch(url).json(body).send().await?;
     parse_json_response(response).await
 }
 
