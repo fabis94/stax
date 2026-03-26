@@ -5,6 +5,7 @@
 - If interactive lists scroll the terminal on navigation, clear and position the cursor before invoking the dialog to avoid rendering into the lower viewport.
 - Bare commands that default to a TUI/dashboard must gate on both `stdin` and `stdout` being terminals and otherwise fall back to help or a non-interactive view; never assume `st`/`st wt` is launched from a full TTY.
 - TUI/dashboard launch checks must also preflight the terminal input backend before entering the alternate screen; `isatty` alone is insufficient under constrained environments such as low file-descriptor limits.
+- TUI/dashboard actions that shell back into `stax` must exit the alternate screen and drop live app/repo state before spawning the nested command; running child `stax` commands from inside an active dashboard can hit `EMFILE` in large repos.
 - When adding or changing CLI commands/flags, update both `README.md` and `docs/` command references in the same change and verify parity against `stax --help` before marking docs complete.
 - Shell integration snippets that define common command names (`stax`, `st`, `sw`) must clear conflicting aliases first; zsh expands aliases while parsing function definitions and can abort shell startup otherwise.
 - Commands intended for first-run/setup flows (for example `shell-setup`) must bypass repo initialization in `src/cli.rs`; otherwise running them outside a configured repo can accidentally trigger `init` and break shell startup or onboarding.

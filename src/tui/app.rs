@@ -126,6 +126,13 @@ pub struct ReorderState {
     pub preview: ReorderPreview,
 }
 
+#[derive(Debug, Clone)]
+pub struct PendingCommand {
+    pub commands: Vec<Vec<String>>,
+    pub success_message: String,
+    pub preferred_selection: Option<String>,
+}
+
 /// Main application state
 pub struct App {
     pub stack: Stack,
@@ -146,18 +153,23 @@ pub struct App {
     pub status_message: Option<String>,
     pub status_set_at: Option<Instant>,
     pub should_quit: bool,
+    pub pending_command: Option<PendingCommand>,
     pub needs_refresh: bool,
     pub reorder_state: Option<ReorderState>,
     diff_cache: HashMap<String, CachedDiff>,
 }
 
 impl App {
-    pub fn new() -> Result<Self> {
+    pub fn new(
+        initial_status: Option<String>,
+        preferred_selection: Option<String>,
+    ) -> Result<Self> {
         let repo = GitRepo::open()?;
         let stack = Stack::load(&repo)?;
         let current_branch = repo.current_branch()?;
         let git_dir = repo.git_dir()?;
         let cache = CiCache::load(git_dir);
+        let status_set_at = initial_status.as_ref().map(|_| Instant::now());
 
         let mut app = Self {
             stack,
@@ -175,16 +187,21 @@ impl App {
             diff_scroll: 0,
             focused_pane: FocusedPane::Stack,
             diff_stat: Vec::new(),
-            status_message: None,
-            status_set_at: None,
+            status_message: initial_status,
+            status_set_at,
             should_quit: false,
+            pending_command: None,
             needs_refresh: true,
             reorder_state: None,
             diff_cache: HashMap::new(),
         };
 
         app.refresh_branches()?;
-        app.select_current_branch();
+        if let Some(branch) = preferred_selection {
+            app.select_branch(&branch);
+        } else {
+            app.select_current_branch();
+        }
         app.update_diff();
 
         Ok(app)
@@ -366,6 +383,18 @@ impl App {
         }
     }
 
+    /// Select a branch by name, falling back to current branch when not found.
+    pub fn select_branch(&mut self, branch: &str) {
+        if let Some(idx) = self.branches.iter().position(|b| b.name == branch) {
+            self.selected_index = idx;
+            self.update_diff();
+            return;
+        }
+
+        self.select_current_branch();
+        self.update_diff();
+    }
+
     /// Get the currently selected branch
     pub fn selected_branch(&self) -> Option<&BranchDisplay> {
         if self.mode == Mode::Search {
@@ -495,6 +524,20 @@ impl App {
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status_message = Some(msg.into());
         self.status_set_at = Some(Instant::now());
+    }
+
+    pub fn queue_command(
+        &mut self,
+        commands: Vec<Vec<String>>,
+        success_message: impl Into<String>,
+        preferred_selection: Option<String>,
+    ) {
+        self.pending_command = Some(PendingCommand {
+            commands,
+            success_message: success_message.into(),
+            preferred_selection,
+        });
+        self.should_quit = true;
     }
 
     /// Clear status message if it's been shown long enough

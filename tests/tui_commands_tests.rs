@@ -6,6 +6,7 @@
 mod common;
 
 use common::{OutputAssertions, TestRepo};
+use std::process::Command;
 
 /// Test that `stax create <name>` works (TUI InputAction::NewBranch)
 #[test]
@@ -64,6 +65,37 @@ fn test_tui_delete_branch_force() {
     output.assert_success();
 
     // Verify branch was deleted
+    let branches = repo.list_branches();
+    assert!(!branches.contains(&branch_name));
+}
+
+/// Test the actual TUI delete flow through a real pseudo-terminal.
+#[test]
+fn test_tui_delete_branch_via_dashboard() {
+    let repo = TestRepo::new();
+
+    repo.run_stax(&["create", "to-delete"]).assert_success();
+    let branch_name = repo.current_branch();
+    repo.run_stax(&["checkout", "main"]).assert_success();
+
+    let stax_bin = common::stax_bin();
+    let script = format!(
+        "(printf 'kdy'; sleep 1; printf 'q') | script -q /dev/null {}",
+        stax_bin.to_str().expect("stax binary path")
+    );
+
+    let output = Command::new("sh")
+        .args(["-c", &script])
+        .current_dir(repo.path())
+        .env("STAX_DISABLE_UPDATE_CHECK", "1")
+        .output()
+        .expect("Failed to collect scripted TUI output");
+    assert!(
+        output.status.success(),
+        "Scripted TUI session failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
     let branches = repo.list_branches();
     assert!(!branches.contains(&branch_name));
 }

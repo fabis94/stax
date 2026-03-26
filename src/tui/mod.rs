@@ -5,14 +5,15 @@ mod ui;
 mod widgets;
 pub mod worktree;
 
-use app::{App, ConfirmAction, FocusedPane, InputAction, Mode};
+use app::{App, ConfirmAction, FocusedPane, InputAction, Mode, PendingCommand};
 use event::{poll_event, KeyAction, KeyContext};
 
 use crate::engine::BranchMetadata;
+use crate::git::GitRepo;
 use crate::git::RebaseResult;
 use crate::ops::receipt::{OpKind, PlanSummary};
 use crate::ops::tx::{self, Transaction};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use crossterm::{
     event::{Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
@@ -21,12 +22,35 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::io::Write;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 /// Run the TUI
 pub fn run() -> Result<()> {
-    // Setup terminal
+    let mut status_message = None;
+    let mut preferred_selection = None;
+
+    loop {
+        let outcome = run_once(status_message.take(), preferred_selection.take())?;
+        match outcome {
+            TuiOutcome::Quit => return Ok(()),
+            TuiOutcome::Command(command) => {
+                preferred_selection = command.preferred_selection.clone();
+                status_message = execute_pending_command(&command)?;
+            }
+        }
+    }
+}
+
+enum TuiOutcome {
+    Quit,
+    Command(PendingCommand),
+}
+
+fn run_once(
+    initial_status: Option<String>,
+    preferred_selection: Option<String>,
+) -> Result<TuiOutcome> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -34,7 +58,8 @@ pub fn run() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Create app state
-    let result = App::new().and_then(|mut app| run_app(&mut terminal, &mut app));
+    let result = App::new(initial_status, preferred_selection)
+        .and_then(|mut app| run_app(&mut terminal, &mut app));
 
     // Restore terminal
     disable_raw_mode()?;
@@ -45,7 +70,10 @@ pub fn run() -> Result<()> {
 }
 
 /// Main event loop
-fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> Result<()> {
+fn run_app(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+) -> Result<TuiOutcome> {
     loop {
         // Refresh if needed
         if app.needs_refresh {
@@ -85,11 +113,12 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         }
 
         if app.should_quit {
-            break;
+            if let Some(command) = app.pending_command.take() {
+                return Ok(TuiOutcome::Command(command));
+            }
+            return Ok(TuiOutcome::Quit);
         }
     }
-
-    Ok(())
 }
 
 /// Handle a key action
@@ -162,7 +191,7 @@ fn handle_normal_action(app: &mut App, action: KeyAction) -> Result<()> {
             if let Some(branch) = app.selected_branch() {
                 if !branch.is_current {
                     let name = branch.name.clone();
-                    checkout_branch(app, &name)?;
+                    queue_checkout_command(app, &name);
                 }
             }
         }
@@ -189,18 +218,23 @@ fn handle_normal_action(app: &mut App, action: KeyAction) -> Result<()> {
             app.mode = Mode::Confirm(ConfirmAction::RestackAll);
         }
         KeyAction::Submit => {
-            // Use --no-prompt since TUI can't handle interactive stdin
-            run_external_command(app, &["submit", "--no-prompt"])?;
+            queue_command(
+                app,
+                vec![vec!["submit".to_string(), "--no-prompt".to_string()]],
+                "Submitted current branch",
+                Some(app.current_branch.clone()),
+            );
         }
         KeyAction::OpenPr => {
             if let Some(branch) = app.selected_branch() {
                 if branch.pr_number.is_some() {
                     let name = branch.name.clone();
-                    // Checkout the branch first if needed, then open PR
+                    let mut commands = Vec::new();
                     if !branch.is_current {
-                        checkout_branch(app, &name)?;
+                        commands.push(vec!["checkout".to_string(), name.clone()]);
                     }
-                    run_external_command(app, &["pr"])?;
+                    commands.push(vec!["pr".to_string()]);
+                    queue_command(app, commands, "Opened PR", Some(name));
                 } else {
                     app.set_status("No PR for this branch");
                 }
@@ -260,7 +294,7 @@ fn handle_search_action(app: &mut App, action: KeyAction) -> Result<()> {
                 if !branch.is_current {
                     let name = branch.name.clone();
                     app.mode = Mode::Normal;
-                    checkout_branch(app, &name)?;
+                    queue_checkout_command(app, &name);
                 } else {
                     app.mode = Mode::Normal;
                 }
@@ -299,7 +333,7 @@ fn handle_search_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 if !branch.is_current {
                     let name = branch.name.clone();
                     app.mode = Mode::Normal;
-                    checkout_branch(app, &name)?;
+                    queue_checkout_command(app, &name);
                 } else {
                     app.mode = Mode::Normal;
                 }
@@ -374,17 +408,42 @@ fn handle_confirm_action(
         KeyAction::Char('y') | KeyAction::Char('Y') => {
             match confirm_action {
                 ConfirmAction::Delete(branch) => {
-                    run_external_command(app, &["branch", "delete", branch, "--force"])?;
+                    queue_command(
+                        app,
+                        vec![vec![
+                            "branch".to_string(),
+                            "delete".to_string(),
+                            branch.clone(),
+                            "--force".to_string(),
+                        ]],
+                        format!("Deleted '{}'", branch),
+                        Some(app.current_branch.clone()),
+                    );
                 }
                 ConfirmAction::Restack(branch) => {
-                    // Checkout branch first if not current
+                    let mut commands = Vec::new();
                     if app.current_branch != *branch {
-                        checkout_branch(app, branch)?;
+                        commands.push(vec!["checkout".to_string(), branch.clone()]);
                     }
-                    run_external_command(app, &["restack", "--quiet"])?;
+                    commands.push(vec!["restack".to_string(), "--quiet".to_string()]);
+                    queue_command(
+                        app,
+                        commands,
+                        format!("Restacked '{}'", branch),
+                        Some(branch.clone()),
+                    );
                 }
                 ConfirmAction::RestackAll => {
-                    run_external_command(app, &["restack", "--all", "--quiet"])?;
+                    queue_command(
+                        app,
+                        vec![vec![
+                            "restack".to_string(),
+                            "--all".to_string(),
+                            "--quiet".to_string(),
+                        ]],
+                        "Restacked all managed branches",
+                        Some(app.current_branch.clone()),
+                    );
                 }
                 ConfirmAction::ApplyReorder => {
                     apply_reorder_changes(app)?;
@@ -421,10 +480,24 @@ fn handle_input_action(app: &mut App, action: KeyAction, input_action: &InputAct
             } else {
                 match input_action {
                     InputAction::Rename => {
-                        run_external_command(app, &["rename", "--literal", &input])?;
+                        queue_command(
+                            app,
+                            vec![vec![
+                                "rename".to_string(),
+                                "--literal".to_string(),
+                                input.clone(),
+                            ]],
+                            format!("Renamed branch to '{}'", input),
+                            Some(input.clone()),
+                        );
                     }
                     InputAction::NewBranch => {
-                        run_external_command(app, &["create", &input])?;
+                        queue_command(
+                            app,
+                            vec![vec!["create".to_string(), input.clone()]],
+                            format!("Created '{}'", input),
+                            Some(input.clone()),
+                        );
                     }
                 }
                 app.mode = Mode::Normal;
@@ -482,10 +555,24 @@ fn handle_input_key(app: &mut App, key: KeyEvent, input_action: &InputAction) ->
             } else {
                 match input_action {
                     InputAction::Rename => {
-                        run_external_command(app, &["rename", "--literal", &input])?;
+                        queue_command(
+                            app,
+                            vec![vec![
+                                "rename".to_string(),
+                                "--literal".to_string(),
+                                input.clone(),
+                            ]],
+                            format!("Renamed branch to '{}'", input),
+                            Some(input.clone()),
+                        );
                     }
                     InputAction::NewBranch => {
-                        run_external_command(app, &["create", &input])?;
+                        queue_command(
+                            app,
+                            vec![vec!["create".to_string(), input.clone()]],
+                            format!("Created '{}'", input),
+                            Some(input.clone()),
+                        );
                     }
                 }
                 app.mode = Mode::Normal;
@@ -557,38 +644,45 @@ fn log_key_event(app: &App, key: &KeyEvent) {
     );
 }
 
-/// Checkout a branch
-fn checkout_branch(app: &mut App, branch: &str) -> Result<()> {
-    app.repo.checkout(branch)?;
-    app.current_branch = branch.to_string();
-    app.needs_refresh = true;
-    app.set_status(format!("Switched to '{}'", branch));
-    Ok(())
+fn queue_checkout_command(app: &mut App, branch: &str) {
+    queue_command(
+        app,
+        vec![vec!["checkout".to_string(), branch.to_string()]],
+        format!("Switched to '{}'", branch),
+        Some(branch.to_string()),
+    );
 }
 
-/// Run an external stax command
-fn run_external_command(app: &mut App, args: &[&str]) -> Result<()> {
-    // Get the current exe path
-    let exe = std::env::current_exe()?;
-    let workdir = app.repo.workdir()?;
+fn queue_command(
+    app: &mut App,
+    commands: Vec<Vec<String>>,
+    success_message: impl Into<String>,
+    preferred_selection: Option<String>,
+) {
+    app.queue_command(commands, success_message, preferred_selection);
+}
 
-    let output = Command::new(&exe)
-        .args(args)
-        .current_dir(workdir)
-        .output()?;
+fn execute_pending_command(command: &PendingCommand) -> Result<Option<String>> {
+    let repo = GitRepo::open()?;
+    let workdir = repo.workdir()?.to_path_buf();
+    drop(repo);
 
-    if output.status.success() {
-        app.needs_refresh = true;
-        app.set_status(format!("✓ {} completed", args.join(" ")));
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        app.set_status(format!(
-            "✗ {}",
-            stderr.lines().next().unwrap_or("Command failed")
-        ));
+    let exe = std::env::current_exe().context("Failed to locate current executable")?;
+
+    for args in &command.commands {
+        let status = Command::new(&exe)
+            .args(args)
+            .current_dir(&workdir)
+            .stdin(Stdio::null())
+            .status()
+            .with_context(|| format!("Failed to run '{}'", args.join(" ")))?;
+
+        if !status.success() {
+            return Ok(Some(format!("Command failed: {}", args.join(" "))));
+        }
     }
 
-    Ok(())
+    Ok(Some(command.success_message.clone()))
 }
 
 /// Apply reorder changes - reparent branches and trigger restack (as single transaction)
