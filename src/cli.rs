@@ -821,6 +821,15 @@ enum Commands {
     #[command(hide = true)]
     Wtprune,
     #[command(hide = true)]
+    Wtcleanup {
+        #[arg(short, long)]
+        force: bool,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        yes: bool,
+    },
+    #[command(hide = true)]
     Wtrs,
 }
 
@@ -1072,6 +1081,20 @@ enum WorktreeCommands {
 
     /// Remove stale git worktree bookkeeping
     Prune,
+
+    /// Prune stale bookkeeping and bulk-remove safe detached/merged worktrees
+    #[command(visible_alias = "clean")]
+    Cleanup {
+        /// Force removal even if a candidate worktree has uncommitted changes
+        #[arg(short, long)]
+        force: bool,
+        /// Preview prune/remove decisions without applying them
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
 
     /// Restack all stax-managed worktrees
     #[command(visible_alias = "rs")]
@@ -1654,6 +1677,11 @@ pub fn run() -> Result<()> {
                 delete_branch,
             }) => commands::worktree::remove::run(name, force, delete_branch),
             Some(WorktreeCommands::Prune) => commands::worktree::prune::run(),
+            Some(WorktreeCommands::Cleanup {
+                force,
+                dry_run,
+                yes,
+            }) => commands::worktree::cleanup::run(force, yes, dry_run),
             Some(WorktreeCommands::Restack) => commands::worktree::restack::run(),
         },
         Commands::ShellSetup { .. } => {
@@ -1707,6 +1735,11 @@ pub fn run() -> Result<()> {
             delete_branch,
         } => commands::worktree::remove::run(name, force, delete_branch),
         Commands::Wtprune => commands::worktree::prune::run(),
+        Commands::Wtcleanup {
+            force,
+            dry_run,
+            yes,
+        } => commands::worktree::cleanup::run(force, yes, dry_run),
         Commands::Wtrs => commands::worktree::restack::run(),
     };
 
@@ -1808,7 +1841,7 @@ fn print_worktree_help() -> Result<()> {
 mod tests {
     use super::{
         check_interactive_terminal_with_probe, detect_interactive_stdio, has_interactive_terminal,
-        Cli, Commands, InteractiveTerminalCheck, RestackSubmitAfter,
+        Cli, Commands, InteractiveTerminalCheck, RestackSubmitAfter, WorktreeCommands,
     };
     use clap::Parser;
     use std::cell::Cell;
@@ -1891,6 +1924,22 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Commands::Worktree { command: Some(_) })
+        ));
+    }
+
+    #[test]
+    fn worktree_cleanup_subcommand_parses() {
+        let cli = Cli::try_parse_from(["stax", "wt", "cleanup", "--force", "--dry-run", "--yes"])
+            .expect("parse worktree cleanup");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Worktree {
+                command: Some(WorktreeCommands::Cleanup {
+                    force: true,
+                    dry_run: true,
+                    yes: true
+                })
+            })
         ));
     }
 
