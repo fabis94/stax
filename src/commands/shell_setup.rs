@@ -769,7 +769,7 @@ mod tests {
         refresh_generated_integration_file, shell_snippet, shell_source_line,
         update_shell_config_contents, ShellKind, INTEGRATION_MARKER,
     };
-    use std::{fs, io::ErrorKind, os::unix::fs::PermissionsExt, path::Path, process::Command};
+    use std::{fs, io::ErrorKind, path::Path, process::Command};
     use tempfile::tempdir;
 
     #[test]
@@ -798,8 +798,11 @@ mod tests {
         assert!(snippet.contains("__stax_exec()"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn posix_shell_snippet_resolves_real_binary_in_zsh() {
+        use std::os::unix::fs::PermissionsExt;
+
         if let Err(err) = Command::new("zsh").arg("-lc").arg("exit 0").output() {
             if err.kind() == ErrorKind::NotFound {
                 return;
