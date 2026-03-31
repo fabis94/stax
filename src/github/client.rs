@@ -101,7 +101,6 @@ pub struct OpenPrInfo {
     pub is_draft: bool,
 }
 
-
 #[derive(Debug, Deserialize)]
 struct ReviewUser {
     login: String,

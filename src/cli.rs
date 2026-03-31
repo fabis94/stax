@@ -741,6 +741,9 @@ enum Commands {
         /// Write shell integration under ~/.config/stax and source it from your shell config
         #[arg(long)]
         install: bool,
+        /// Refresh already-installed generated shell snippets in-place
+        #[arg(long, hide = true, conflicts_with = "install")]
+        refresh: bool,
     },
 
     // Hidden top-level shortcuts for convenience
@@ -1166,11 +1169,19 @@ fn print_subcommand_help(name: &str) -> Result<()> {
 pub fn run() -> Result<()> {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
+    let cli = Cli::parse();
+
+    if let Some(Commands::ShellSetup { install, refresh }) = &cli.command {
+        let result = commands::shell_setup::run(*install, *refresh);
+        update::show_update_notification();
+        update::check_in_background();
+        return result;
+    }
+
     // Ensure config exists (creates default on first run)
     let _ = Config::ensure_exists();
     let _ = commands::shell_setup::refresh_installed_snippets();
 
-    let cli = Cli::parse();
     let (stdin_is_terminal, stdout_is_terminal) = detect_interactive_stdio();
 
     // Bare `st`/`stax` should only enter the TUI when both sides are interactive.
@@ -1247,12 +1258,6 @@ pub fn run() -> Result<()> {
         }
         Commands::Demo => {
             let result = commands::demo::run();
-            update::show_update_notification();
-            update::check_in_background();
-            return result;
-        }
-        Commands::ShellSetup { install } => {
-            let result = commands::shell_setup::run(*install);
             update::show_update_notification();
             update::check_in_background();
             return result;
@@ -1422,7 +1427,11 @@ pub fn run() -> Result<()> {
             max_rounds,
         } => commands::resolve::run(agent, model, max_rounds),
         Commands::Abort => commands::abort::run(),
-        Commands::Modify { message, all, quiet } => commands::modify::run(message, all, quiet),
+        Commands::Modify {
+            message,
+            all,
+            quiet,
+        } => commands::modify::run(message, all, quiet),
         Commands::Auth { .. } => unreachable!(), // Handled above
         Commands::Config { .. } => unreachable!(), // Handled above
         Commands::Init { .. } => unreachable!(), // Handled above

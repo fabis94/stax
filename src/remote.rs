@@ -41,7 +41,11 @@ impl RemoteInfo {
         let name = config.remote_name().to_string();
         let url = get_remote_url(repo.workdir()?, &name)?;
         let (host, path) = parse_remote_url(&url)?;
-        let forge = detect_forge(&host, config.remote_base_url(), config.remote_forge_override());
+        let forge = detect_forge(
+            &host,
+            config.remote_base_url(),
+            config.remote_forge_override(),
+        );
         let (namespace, repo_name) = split_namespace_repo(&path)?;
 
         let configured_base = config.remote_base_url().trim_end_matches('/');
@@ -100,7 +104,11 @@ impl RemoteInfo {
     }
 }
 
-fn detect_forge(host: &str, configured_base_url: &str, forge_override: Option<ForgeType>) -> ForgeType {
+fn detect_forge(
+    host: &str,
+    configured_base_url: &str,
+    forge_override: Option<ForgeType>,
+) -> ForgeType {
     if let Some(forge) = forge_override {
         return forge;
     }
@@ -610,7 +618,11 @@ mod tests {
             ForgeType::GitLab
         );
         assert_eq!(
-            detect_forge("git.mycompany.com", "https://git.mycompany.com", Some(ForgeType::GitLab)),
+            detect_forge(
+                "git.mycompany.com",
+                "https://git.mycompany.com",
+                Some(ForgeType::GitLab)
+            ),
             ForgeType::GitLab
         );
         assert_eq!(
@@ -618,7 +630,11 @@ mod tests {
             ForgeType::GitHub
         );
         assert_eq!(
-            detect_forge("git.example.com", "https://git.example.com", Some(ForgeType::Gitea)),
+            detect_forge(
+                "git.example.com",
+                "https://git.example.com",
+                Some(ForgeType::Gitea)
+            ),
             ForgeType::Gitea
         );
     }

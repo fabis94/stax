@@ -362,7 +362,11 @@ end"#
 }
 
 /// Print the shell snippet to stdout for manual shell setup.
-pub fn run(install: bool) -> Result<()> {
+pub fn run(install: bool, refresh: bool) -> Result<()> {
+    if refresh {
+        return refresh_installed_snippets();
+    }
+
     if cfg!(target_os = "windows") {
         bail!(
             "Shell integration is not yet available on Windows.\n\

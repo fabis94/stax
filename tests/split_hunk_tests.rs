@@ -149,12 +149,21 @@ fn test_split_hunk_two_files_into_two_branches() {
 
     let split_1 = format!("{}_split_1", original);
     let branches = repo.list_branches();
-    assert!(branches.contains(&split_1), "Missing {split_1}, got: {branches:?}");
-    assert!(branches.contains(&original), "Missing {original}, got: {branches:?}");
+    assert!(
+        branches.contains(&split_1),
+        "Missing {split_1}, got: {branches:?}"
+    );
+    assert!(
+        branches.contains(&original),
+        "Missing {original}, got: {branches:?}"
+    );
 
     let parents = parent_map(&repo);
     assert_eq!(parents.get(&split_1).map(String::as_str), Some("main"));
-    assert_eq!(parents.get(&original).map(String::as_str), Some(split_1.as_str()));
+    assert_eq!(
+        parents.get(&original).map(String::as_str),
+        Some(split_1.as_str())
+    );
 
     // Each branch should introduce exactly one of the two files
     let s1_files = introduced_files(&repo, "main", &split_1);
@@ -163,7 +172,8 @@ fn test_split_hunk_two_files_into_two_branches() {
         (s1_files.contains("extra.txt") && orig_files.contains("feature-a.txt"))
             || (s1_files.contains("feature-a.txt") && orig_files.contains("extra.txt")),
         "Each branch should introduce one file. split_1: {:?}, original: {:?}",
-        s1_files, orig_files
+        s1_files,
+        orig_files
     );
 }
 
@@ -182,14 +192,29 @@ fn test_split_hunk_three_files_three_branches() {
     let split_1 = format!("{}_split_1", original);
     let split_2 = format!("{}_split_2", original);
     let branches = repo.list_branches();
-    assert!(branches.contains(&split_1), "Missing {split_1}, got: {branches:?}");
-    assert!(branches.contains(&split_2), "Missing {split_2}, got: {branches:?}");
-    assert!(branches.contains(&original), "Missing {original}, got: {branches:?}");
+    assert!(
+        branches.contains(&split_1),
+        "Missing {split_1}, got: {branches:?}"
+    );
+    assert!(
+        branches.contains(&split_2),
+        "Missing {split_2}, got: {branches:?}"
+    );
+    assert!(
+        branches.contains(&original),
+        "Missing {original}, got: {branches:?}"
+    );
 
     let parents = parent_map(&repo);
     assert_eq!(parents.get(&split_1).map(String::as_str), Some("main"));
-    assert_eq!(parents.get(&split_2).map(String::as_str), Some(split_1.as_str()));
-    assert_eq!(parents.get(&original).map(String::as_str), Some(split_2.as_str()));
+    assert_eq!(
+        parents.get(&split_2).map(String::as_str),
+        Some(split_1.as_str())
+    );
+    assert_eq!(
+        parents.get(&original).map(String::as_str),
+        Some(split_2.as_str())
+    );
 }
 
 #[test]
@@ -233,7 +258,8 @@ fn test_split_hunk_with_new_file() {
     assert!(
         s1_files.contains("brand_new.txt") ^ orig_files.contains("brand_new.txt"),
         "brand_new.txt should be introduced by exactly one branch: split_1={:?}, original={:?}",
-        s1_files, orig_files
+        s1_files,
+        orig_files
     );
 }
 

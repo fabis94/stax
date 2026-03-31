@@ -457,11 +457,7 @@ impl GiteaClient {
                     .user
                     .map(|u| u.login)
                     .unwrap_or_else(|| "unknown".to_string()),
-                labels: issue
-                    .labels
-                    .into_iter()
-                    .filter_map(|l| l.name)
-                    .collect(),
+                labels: issue.labels.into_iter().filter_map(|l| l.name).collect(),
                 updated_at: issue.updated_at,
             })
             .collect())
@@ -805,8 +801,7 @@ mod tests {
             .and(header("Authorization", "token test-token"))
             .and(path("/user"))
             .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({ "login": "carol" })),
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "login": "carol" })),
             )
             .mount(&server)
             .await;
