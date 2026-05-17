@@ -53,6 +53,10 @@ pub fn format_status_line(
     format!(" #[fg=colour250]#[fg=default] {} [{}/{}] {}  {}", branch_display, pos, total, pr_str, ci_str)
 }
 
+pub fn format_branch_status_line(branch: &str) -> String {
+    format!(" #[fg=colour250]#[fg=default] {}", branch)
+}
+
 fn run_status() -> Result<()> {
     // Status bar context: fail silently so tmux shows an empty segment rather than an error string
     let repo = match GitRepo::open() {
@@ -69,6 +73,7 @@ fn run_status() -> Result<()> {
     };
 
     if current == stack.trunk {
+        print!("{}", format_branch_status_line(&current));
         return Ok(());
     }
 
@@ -176,6 +181,14 @@ mod tests {
     fn test_status_branch_has_nerd_font_icon() {
         let result = format_status_line("feat/foo", 1, 1, None, false, None, None);
         assert!(result.contains("#[fg=default] feat/foo"), "branch icon missing: {result}");
+    }
+
+    #[test]
+    fn test_trunk_status_shows_branch_without_stack_metadata() {
+        let result = format_branch_status_line("main");
+        assert_eq!(result, " #[fg=colour250]#[fg=default] main");
+        assert!(!result.contains("[1/"), "trunk status should not show stack position: {result}");
+        assert!(!result.contains("CI"), "trunk status should not show CI metadata: {result}");
     }
 
     #[test]
