@@ -36,7 +36,7 @@ pub fn format_status_line(
 
     let pr_str = match pr_number {
         None => "#[fg=colour240]⊘#[fg=default]".to_string(),
-        Some(n) if pr_is_draft => format!("#[fg=colour240]#{} draft#[fg=default]", n),
+        Some(n) if pr_is_draft => format!("#[fg=yellow]#{} draft#[fg=default]", n),
         Some(n) if pr_state.map(|s| s.eq_ignore_ascii_case("merged")).unwrap_or(false) => {
             format!("#[fg=magenta]#{} merged#[fg=default]", n)
         }
@@ -50,7 +50,7 @@ pub fn format_status_line(
         _ => "#[fg=colour240]– no CI#[fg=default]",
     };
 
-    format!(" {} [{}/{}] {}  {}", branch_display, pos, total, pr_str, ci_str)
+    format!(" #[fg=colour250]#[fg=default] {} [{}/{}] {}  {}", branch_display, pos, total, pr_str, ci_str)
 }
 
 fn run_status() -> Result<()> {
@@ -169,6 +169,13 @@ mod tests {
     fn test_status_draft_pr() {
         let result = format_status_line("feat/foo", 1, 1, Some(7), true, Some("OPEN"), None);
         assert!(result.contains("#7 draft"), "draft PR missing: {result}");
+        assert!(result.contains("#[fg=yellow]#7 draft"), "draft PR should be readable on tmux gray backgrounds: {result}");
+    }
+
+    #[test]
+    fn test_status_branch_has_nerd_font_icon() {
+        let result = format_status_line("feat/foo", 1, 1, None, false, None, None);
+        assert!(result.contains("#[fg=default] feat/foo"), "branch icon missing: {result}");
     }
 
     #[test]
