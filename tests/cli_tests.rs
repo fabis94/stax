@@ -181,6 +181,7 @@ fn test_help() {
     assert!(stdout.contains("Fast stacked Git branches and PRs"));
     assert!(stdout.contains("status"));
     assert!(stdout.contains("submit"));
+    assert!(stdout.contains("update"));
     assert!(stdout.contains("run"));
     assert!(stdout.contains("restack"));
     assert!(stdout.contains("resolve"));
@@ -232,8 +233,8 @@ fn test_sync_alias_rs() {
 }
 
 #[test]
-fn test_refresh_help() {
-    let output = stax(&["refresh", "--help"]);
+fn test_update_help() {
+    let output = stax(&["update", "--help"]);
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Sync trunk"));
@@ -244,6 +245,15 @@ fn test_refresh_help() {
     assert!(stdout.contains("verbose"));
     assert!(stdout.contains("--yes"));
     assert!(stdout.contains("--no-prompt"));
+}
+
+#[test]
+fn test_refresh_alias_help() {
+    let output = stax(&["refresh", "--help"]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Sync trunk"));
+    assert!(stdout.contains("no-submit"));
 }
 
 #[test]

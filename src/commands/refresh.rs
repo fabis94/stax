@@ -18,7 +18,7 @@ pub fn run(
     let original = repo.current_branch()?;
     let workdir = repo.workdir()?.to_path_buf();
 
-    println!("{}", "Refreshing stack...".bold());
+    println!("{}", "Updating stack...".bold());
     println!("  1. Sync trunk and clean merged branches");
     println!("  2. Restack current stack onto updated parents");
     if no_submit {

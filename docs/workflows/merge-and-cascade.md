@@ -100,15 +100,15 @@ Restack + push + create/update PRs in a single flow.
 | `st cascade --no-submit` | restack only |
 | `st cascade --auto-stash-pop` | auto stash/pop dirty worktrees |
 
-## `st refresh`
+## `st update`
 
 The "bottom PR merged, catch me up" command. Prints the plan up front, then runs sync → restack → submit.
 
 | Command | Behavior |
 |---|---|
-| `st refresh` | sync → restack → push → create/update PRs |
-| `st refresh --no-pr` | sync → restack → push |
-| `st refresh --no-submit` | sync → restack |
-| `st refresh --force` | force the sync step instead of prompting |
-| `st refresh --force --yes --no-prompt` | run the full sync/restack/submit flow without prompts |
-| `st refresh --verbose` | show detailed sync/restack/submit timing |
+| `st update` | sync → restack → push → create/update PRs |
+| `st update --no-pr` | sync → restack → push |
+| `st update --no-submit` | sync → restack |
+| `st update --force` | force the sync step instead of prompting |
+| `st update --force --yes --no-prompt` | run the full sync/restack/submit flow without prompts |
+| `st update --verbose` | show detailed sync/restack/submit timing |

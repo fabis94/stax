@@ -2151,18 +2151,18 @@ fn test_refresh_no_submit_keeps_original_branch_and_restacks_stack() {
     repo.run_stax(&["checkout", &middle]);
     let original = repo.current_branch();
 
-    let output = repo.run_stax(&["refresh", "--no-submit", "--force"]);
+    let output = repo.run_stax(&["update", "--no-submit", "--force"]);
     assert!(
         output.status.success(),
-        "refresh --no-submit failed\nstdout: {}\nstderr: {}",
+        "update --no-submit failed\nstdout: {}\nstderr: {}",
         TestRepo::stdout(&output),
         TestRepo::stderr(&output)
     );
 
     let stdout = TestRepo::stdout(&output);
     assert!(
-        stdout.contains("Refreshing stack..."),
-        "Expected refresh banner, got: {}",
+        stdout.contains("Updating stack..."),
+        "Expected update banner, got: {}",
         stdout
     );
     assert!(
@@ -2463,8 +2463,8 @@ fn test_refresh_conflict_reports_restack_context() {
 
     let stdout = TestRepo::stdout(&output);
     assert!(
-        stdout.contains("Refreshing stack..."),
-        "Expected refresh banner, got: {}",
+        stdout.contains("Updating stack..."),
+        "Expected update banner, got: {}",
         stdout
     );
     assert!(

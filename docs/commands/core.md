@@ -36,7 +36,7 @@ st create --below -am "fix: patch CVE-2026-0001"
 | `st merge --all` | Merge the entire stack regardless of where you are |
 | `st cascade` | Restack, push, and create/update PRs in one shot |
 
-## Sync, restack, refresh
+## Sync, restack, update
 
 | Command | What it does |
 |---|---|
@@ -44,9 +44,9 @@ st create --below -am "fix: patch CVE-2026-0001"
 | `st rs --restack` | `rs` **plus** rebase the current stack onto updated trunk |
 | `st rs --delete-upstream-gone` | Also delete local branches whose upstream is gone |
 | `st restack` | Rebase current stack onto parents locally (no fetch) |
-| `st refresh` | `sync --restack` **plus** push and update PRs |
-| `st refresh --force --yes --no-prompt` | Full refresh flow without sync or submit prompts |
-| `st refresh --verbose` | Same as `st refresh`, with detailed sync/restack/submit timing |
+| `st update` | `sync --restack` **plus** push and update PRs |
+| `st update --force --yes --no-prompt` | Full update flow without sync or submit prompts |
+| `st update --verbose` | Same as `st update`, with detailed sync/restack/submit timing |
 
 ## Navigation and recovery
 

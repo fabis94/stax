@@ -432,11 +432,12 @@ enum Commands {
     },
 
     /// Sync trunk, restack current stack, then submit updates
-    Refresh {
+    #[command(alias = "refresh")]
+    Update {
         /// Push branches to remote but skip PR creation/updates
         #[arg(long)]
         no_pr: bool,
-        /// Skip all remote interaction after restack (local refresh only)
+        /// Skip all remote interaction after restack (local update only)
         #[arg(long)]
         no_submit: bool,
         /// Force sync without prompts
@@ -1922,7 +1923,7 @@ pub fn run() -> Result<()> {
             no_submit,
             auto_stash_pop,
         } => commands::cascade::run(no_pr, no_submit, auto_stash_pop),
-        Commands::Refresh {
+        Commands::Update {
             no_pr,
             no_submit,
             force,
