@@ -1625,6 +1625,10 @@ fn print_subcommand_help(name: &str) -> Result<()> {
 pub fn run() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
+    // Spawn update check immediately so it runs in parallel with command work.
+    // The handle joins the thread on drop, ensuring the cache write completes before exit.
+    let _update_handle = update::check_in_background();
+
     let cli = Cli::parse();
 
     if let Some(Commands::Setup {
@@ -1658,7 +1662,6 @@ pub fn run() -> Result<()> {
         };
         let result = commands::shell_setup::run(*print, *refresh, setup_options);
         update::show_update_notification();
-        update::check_in_background();
         return result;
     }
 
@@ -1680,7 +1683,6 @@ pub fn run() -> Result<()> {
                 commands::init::ensure_initialized()?;
                 let result = tui::run();
                 update::show_update_notification();
-                update::check_in_background();
                 return result;
             }
 
@@ -1715,7 +1717,6 @@ pub fn run() -> Result<()> {
                 None => commands::auth::run(token.clone(), *from_gh),
             };
             update::show_update_notification();
-            update::check_in_background();
             return result;
         }
         Commands::Cli { command } => {
@@ -1732,19 +1733,16 @@ pub fn run() -> Result<()> {
         } => {
             let result = commands::config::run(*reset_ai, *no_prompt, *yes, *set_ai);
             update::show_update_notification();
-            update::check_in_background();
             return result;
         }
         Commands::Init { trunk } => {
             let result = commands::init::run(trunk.clone());
             update::show_update_notification();
-            update::check_in_background();
             return result;
         }
         Commands::Doctor => {
             let result = commands::doctor::run();
             update::show_update_notification();
-            update::check_in_background();
             return result;
         }
         Commands::Skills { command } => {
@@ -1753,13 +1751,11 @@ pub fn run() -> Result<()> {
                 Some(SkillsCommands::Update { dry_run }) => commands::skills::run_update(*dry_run),
             };
             update::show_update_notification();
-            update::check_in_background();
             return result;
         }
         Commands::Demo => {
             let result = commands::demo::run();
             update::show_update_notification();
-            update::check_in_background();
             return result;
         }
         _ => {}
@@ -2444,9 +2440,8 @@ pub fn run() -> Result<()> {
         Commands::Wtrs => commands::worktree::restack::run(),
     };
 
-    // Show update notification (from cache, instant) and spawn background check for next run
+    // Show update notification from cache (instant — no network request here)
     update::show_update_notification();
-    update::check_in_background();
 
     match result {
         Ok(()) => Ok(()),

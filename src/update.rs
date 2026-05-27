@@ -89,23 +89,36 @@ fn binstall_metadata_contains_stax(cargo_home: Option<&Path>) -> bool {
         .any(|record| record.name == PKG_NAME)
 }
 
+/// A handle to the background update-check thread.
+/// Joins the thread when dropped, ensuring the cache write completes before the process exits.
+pub struct UpdateHandle(Option<thread::JoinHandle<()>>);
+
+impl Drop for UpdateHandle {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 /// Spawn a background thread to check for updates.
-/// This is non-blocking and won't affect CLI performance.
+/// Returns an `UpdateHandle` that must be kept alive until the end of the command —
+/// dropping it joins the thread so the cache write completes before the process exits.
 /// Results are cached by update-informer for 24 hours.
-pub fn check_in_background() {
+pub fn check_in_background() -> UpdateHandle {
     if update_checks_disabled() {
-        return;
+        return UpdateHandle(None);
     }
 
-    thread::spawn(|| {
+    let handle = thread::spawn(|| {
         let informer = update_informer::new(registry::Crates, PKG_NAME, PKG_VERSION)
-            .timeout(Duration::from_secs(3))
+            .timeout(Duration::from_secs(1))
             .interval(Duration::from_secs(60 * 60 * 24)); // 24 hours
 
-        // This will either use cached result or make a network request
-        // The result is cached for the next run
         let _ = informer.check_version();
     });
+
+    UpdateHandle(Some(handle))
 }
 
 /// Check for cached update info and display if a new version is available.
