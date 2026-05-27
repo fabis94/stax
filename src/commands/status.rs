@@ -296,9 +296,7 @@ pub fn run(
         let branch = &db.name;
         let is_current = branch == &current;
         let entry = branch_status_map.get(branch);
-        // Show cloud if branch exists on remote OR has a PR (PR implies it was pushed)
-        let has_remote =
-            remote_branches.contains(branch) || entry.and_then(|e| e.pr_number).is_some();
+        let has_remote = entry.and_then(|e| e.pr_number).is_some();
 
         // Check if we need a corner connector - this happens when the PREVIOUS branch was at a higher column
         // The corner shows that a side branch joins back to this level

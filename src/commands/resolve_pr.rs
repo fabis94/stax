@@ -41,8 +41,8 @@ pub fn resolve_pr_number(
         Err(_) => return Ok(None),
     };
 
-    let pr_number = match rt.block_on(async { client.find_pr(branch).await }) {
-        Ok(Some(pr_info)) => pr_info.number,
+    let pr_number = match rt.block_on(async { client.find_open_pr_by_head(branch).await }) {
+        Ok(Some(pr_info)) => pr_info.info.number,
         _ => return Ok(None),
     };
 
