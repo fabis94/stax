@@ -28,6 +28,8 @@ pub struct BranchCiStatus {
     pub pr_number: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pr_is_draft: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr_title: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -286,6 +288,7 @@ pub fn run(
     strict: bool,
     interval: u64,
     verbose: bool,
+    oneline: bool,
 ) -> Result<()> {
     let repo = GitRepo::open()?;
     let current = repo.current_branch()?;
@@ -302,7 +305,9 @@ pub fn run(
             .filter(|b| *b != &stack_data.trunk)
             .cloned()
             .collect()
-    } else if stack {
+    } else if stack || oneline {
+        // `--oneline` is about seeing the whole stack, so default its scope to
+        // the current stack when no explicit scope flag is given.
         stack_data
             .current_stack(&current)
             .into_iter()
@@ -350,6 +355,7 @@ pub fn run(
             interval,
             json,
             verbose,
+            oneline,
             alert,
             strict,
         );
@@ -364,12 +370,10 @@ pub fn run(
     }
 
     let multi = statuses.len() > 1;
-    if verbose {
-        // --verbose: compact cards view
-        display_ci_compact(&repo, &statuses, &current, multi);
-    } else {
-        // default: full per-check table
-        display_ci_verbose(&repo, &statuses, &current, multi);
+    match ci_view_mode(oneline, verbose, multi) {
+        CiView::Oneline => display_ci_oneline(&repo, &statuses, &current, &stack_data),
+        CiView::Cards => display_ci_compact(&repo, &statuses, &current, multi),
+        CiView::Table => display_ci_verbose(&repo, &statuses, &current, multi),
     }
     record_ci_history(&repo, &statuses);
 
@@ -402,10 +406,11 @@ pub(crate) async fn fetch_ci_statuses_async(
             };
 
             let pr_live = match pr_number {
-                Some(n) => client.get_pr(*n).await.ok(),
+                Some(n) => client.get_pr_with_head(*n).await.ok(),
                 None => None,
             };
-            let pr_is_draft = pr_live.as_ref().map(|p| p.is_draft);
+            let pr_is_draft = pr_live.as_ref().map(|p| p.info.is_draft);
+            let pr_title = pr_live.as_ref().map(|p| p.title.clone());
 
             BranchCiStatus {
                 branch: branch.clone(),
@@ -415,6 +420,7 @@ pub(crate) async fn fetch_ci_statuses_async(
                 check_runs,
                 pr_number: *pr_number,
                 pr_is_draft,
+                pr_title,
             }
         },
     ))
@@ -791,6 +797,263 @@ fn print_multi_branch_header(statuses: &[BranchCiStatus]) {
     println!("CI  {}", parts.join("  "));
 }
 
+/// Roll-up state of a branch's CI for the `--oneline` view.
+enum CiRollup {
+    NoCi,
+    Failing(usize),
+    Running { done: usize, total: usize },
+    Passing(usize),
+}
+
+/// Collapse a branch's check runs into a single roll-up state.
+fn ci_rollup(status: &BranchCiStatus) -> CiRollup {
+    if status.check_runs.is_empty() {
+        return CiRollup::NoCi;
+    }
+    let total = status.check_runs.len();
+    let failed = status
+        .check_runs
+        .iter()
+        .filter(|c| {
+            c.status == "completed"
+                && matches!(
+                    c.conclusion.as_deref(),
+                    Some("failure") | Some("timed_out") | Some("action_required")
+                )
+        })
+        .count();
+    if failed > 0 {
+        return CiRollup::Failing(failed);
+    }
+    let done = status
+        .check_runs
+        .iter()
+        .filter(|c| c.status == "completed")
+        .count();
+    if done < total {
+        return CiRollup::Running { done, total };
+    }
+    CiRollup::Passing(total)
+}
+
+/// One-line counts summary for the `--oneline` view.
+///
+/// Returns `"no CI"`, `"<n> failing"`, `"<done>/<total> running"`, or `"<n> checks"`.
+fn oneline_check_summary(status: &BranchCiStatus) -> String {
+    match ci_rollup(status) {
+        CiRollup::NoCi => "no CI".to_string(),
+        CiRollup::Failing(n) => format!("{} failing", n),
+        CiRollup::Running { done, total } => format!("{}/{} running", done, total),
+        CiRollup::Passing(n) => format!("{} checks", n),
+    }
+}
+
+/// Which renderer `stax ci` should use for a given run.
+enum CiView {
+    /// Full per-check table (single branch, no flags).
+    Table,
+    /// Grouped failed/running/passed summary cards (`--verbose`).
+    Cards,
+    /// One compact line per branch (`--oneline`, or any multi-branch view).
+    Oneline,
+}
+
+/// Decide the render mode. `--verbose` always wins for cards; otherwise the
+/// oneline roll-up is used for the `--oneline` flag or any multi-branch view,
+/// leaving the detailed table only for a single branch.
+fn ci_view_mode(oneline: bool, verbose: bool, multi: bool) -> CiView {
+    if verbose {
+        CiView::Cards
+    } else if oneline || multi {
+        CiView::Oneline
+    } else {
+        CiView::Table
+    }
+}
+
+/// Review-state label for the `--oneline` view: `"draft"`, `"ready"`, or `""`.
+///
+/// Empty when the branch has no PR, or when the draft state is unknown.
+fn oneline_review_label(status: &BranchCiStatus) -> &'static str {
+    match (status.pr_number, status.pr_is_draft) {
+        (Some(_), Some(true)) => "draft",
+        (Some(_), Some(false)) => "ready",
+        _ => "",
+    }
+}
+
+/// Colored overall-status icon for the `--oneline` view.
+fn oneline_overall_icon(status: &BranchCiStatus) -> colored::ColoredString {
+    match status.overall_status.as_deref() {
+        Some("success") => "✓".green().bold(),
+        Some("failure") => "✗".red().bold(),
+        Some("pending") => "●".yellow().bold(),
+        _ => "○".dimmed(),
+    }
+}
+
+/// Format a single branch as one line for the `--oneline` view.
+///
+/// Columns are padded on plain text (before coloring) so ANSI escape codes
+/// don't skew alignment. `timing` is the optional CI elapsed/ETA segment.
+fn oneline_row(
+    status: &BranchCiStatus,
+    is_current: bool,
+    branch_w: usize,
+    pr_w: usize,
+    state_w: usize,
+    title_w: usize,
+    timing: Option<&str>,
+) -> String {
+    let icon = oneline_overall_icon(status);
+
+    // Branch column: cyan, bold for the current branch. Pad on plain text so
+    // ANSI codes don't skew alignment.
+    let branch_padded = format!("{:<width$}", status.branch, width = branch_w);
+    let branch_cell = if is_current {
+        branch_padded.cyan().bold()
+    } else {
+        branch_padded.cyan()
+    };
+
+    let pr_str = status
+        .pr_number
+        .map(|n| format!("#{}", n))
+        .unwrap_or_default();
+    let pr_cell = format!("{:<width$}", pr_str, width = pr_w).bright_magenta();
+
+    // Review-state column: dim "draft", green "ready"; omitted when no row has
+    // a PR (state_w == 0). Padded on plain text before coloring.
+    let state_cell = if state_w > 0 {
+        let label = oneline_review_label(status);
+        let padded = format!("{:<width$}", label, width = state_w);
+        let colored = match label {
+            "draft" => padded.dimmed(),
+            "ready" => padded.green(),
+            _ => padded.normal(),
+        };
+        Some(colored.to_string())
+    } else {
+        None
+    };
+
+    // Title column: the current branch's title stands out in bold white.
+    let title = status.pr_title.as_deref().unwrap_or("");
+    let title_trunc = truncate_title(title, title_w);
+    let title_pad = title_w.saturating_sub(title_trunc.chars().count());
+    let title_cell = if is_current {
+        format!("{}{}", title_trunc.bold().white(), " ".repeat(title_pad))
+    } else {
+        format!("{}{}", title_trunc.white(), " ".repeat(title_pad))
+    };
+
+    // Trailing summary: colored by roll-up state, with dimmed timing.
+    let summary = oneline_check_summary(status);
+    let summary_cell = match ci_rollup(status) {
+        CiRollup::NoCi => summary.dimmed(),
+        CiRollup::Failing(_) => summary.red().bold(),
+        CiRollup::Running { .. } => summary.yellow(),
+        CiRollup::Passing(_) => summary.green(),
+    };
+    let trailing = match timing {
+        Some(t) if !t.is_empty() => {
+            format!("{} {} {}", summary_cell, "·".dimmed(), t.dimmed())
+        }
+        _ => summary_cell.to_string(),
+    };
+
+    let mut cells = vec![
+        icon.to_string(),
+        branch_cell.to_string(),
+        pr_cell.to_string(),
+    ];
+    if let Some(state) = state_cell {
+        cells.push(state);
+    }
+    cells.push(title_cell);
+    cells.push(trailing);
+    cells.join("  ")
+}
+
+/// Visible terminal width, with a sane fallback when it can't be detected.
+fn terminal_width() -> usize {
+    crossterm::terminal::size()
+        .map(|(cols, _)| cols as usize)
+        .unwrap_or(120)
+        .max(40)
+}
+
+/// One-line-per-branch display for the `--oneline` view.
+///
+/// Rows are ordered base→tip (by depth from trunk), columns are aligned, and
+/// the PR title is truncated to fit the terminal width.
+fn display_ci_oneline(repo: &GitRepo, statuses: &[BranchCiStatus], current: &str, stack: &Stack) {
+    if statuses.len() > 1 {
+        print_multi_branch_header(statuses);
+        println!();
+    }
+
+    // Order base -> tip: shallower (closer to trunk) first, then by name.
+    let mut ordered: Vec<&BranchCiStatus> = statuses.iter().collect();
+    ordered.sort_by(|a, b| {
+        let da = stack.ancestors(&a.branch).len();
+        let db = stack.ancestors(&b.branch).len();
+        da.cmp(&db).then_with(|| a.branch.cmp(&b.branch))
+    });
+
+    let branch_w = ordered
+        .iter()
+        .map(|s| s.branch.chars().count())
+        .max()
+        .unwrap_or(0);
+    let pr_w = ordered
+        .iter()
+        .map(|s| s.pr_number.map(|n| format!("#{}", n).len()).unwrap_or(0))
+        .max()
+        .unwrap_or(0);
+    let state_w = ordered
+        .iter()
+        .map(|s| oneline_review_label(s).len())
+        .max()
+        .unwrap_or(0);
+
+    // Layout: icon(1) + 2 + branch + 2 + pr + 2 + [state + 2] + title + 2 + summary.
+    const SUMMARY_BUDGET: usize = 24;
+    let state_extra = if state_w > 0 { state_w + 2 } else { 0 };
+    let fixed = 1 + 2 + branch_w + 2 + pr_w + 2 + state_extra + 2 + SUMMARY_BUDGET;
+    let title_w = terminal_width().saturating_sub(fixed).max(10);
+
+    for status in ordered {
+        let is_current = status.branch == current;
+        let timing = calculate_branch_timing(repo, &status.check_runs)
+            .map(|t| format_duration(t.elapsed_secs));
+        println!(
+            "{}",
+            oneline_row(
+                status,
+                is_current,
+                branch_w,
+                pr_w,
+                state_w,
+                title_w,
+                timing.as_deref()
+            )
+        );
+    }
+}
+
+/// Truncate `title` to at most `max` visible characters, appending `…` when cut.
+fn truncate_title(title: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    if title.chars().count() <= max {
+        return title.to_string();
+    }
+    let kept: String = title.chars().take(max.saturating_sub(1)).collect();
+    format!("{}…", kept)
+}
+
 /// Record CI history for completed successful checks
 pub fn record_ci_history(repo: &GitRepo, statuses: &[BranchCiStatus]) {
     for status in statuses {
@@ -931,6 +1194,7 @@ fn run_watch_mode(
     interval: u64,
     json: bool,
     verbose: bool,
+    oneline: bool,
     alert: Option<CiAlertSounds>,
     strict: bool,
 ) -> Result<()> {
@@ -962,10 +1226,10 @@ fn run_watch_mode(
             println!("{}", serde_json::to_string_pretty(&statuses)?);
         } else {
             let multi = statuses.len() > 1;
-            if verbose {
-                display_ci_compact(repo, &statuses, current, multi);
-            } else {
-                display_ci_verbose(repo, &statuses, current, multi);
+            match ci_view_mode(oneline, verbose, multi) {
+                CiView::Oneline => display_ci_oneline(repo, &statuses, current, stack),
+                CiView::Cards => display_ci_compact(repo, &statuses, current, multi),
+                CiView::Table => display_ci_verbose(repo, &statuses, current, multi),
             }
         }
 
@@ -1686,6 +1950,7 @@ mod tests {
             check_runs,
             pr_number: Some(123),
             pr_is_draft: None,
+            pr_title: None,
         }
     }
 
@@ -1940,6 +2205,7 @@ mod tests {
             }],
             pr_number: Some(42),
             pr_is_draft: None,
+            pr_title: None,
         };
 
         let json = serde_json::to_string(&status).unwrap();
@@ -1961,6 +2227,7 @@ mod tests {
             check_runs: vec![],
             pr_number: None,
             pr_is_draft: None,
+            pr_title: None,
         };
 
         let json = serde_json::to_string(&status).unwrap();
@@ -2302,5 +2569,205 @@ mod tests {
             assert_eq!(statuses[0].pr_number, None);
             assert_eq!(statuses[0].pr_is_draft, None);
         });
+    }
+
+    #[test]
+    fn oneline_summary_all_passed() {
+        let status = test_branch_status(
+            "success",
+            vec![
+                test_check("build", "completed", Some("success")),
+                test_check("test", "completed", Some("success")),
+            ],
+        );
+        assert_eq!(oneline_check_summary(&status), "2 checks");
+    }
+
+    #[test]
+    fn oneline_summary_counts_failures() {
+        let status = test_branch_status(
+            "failure",
+            vec![
+                test_check("build", "completed", Some("success")),
+                test_check("test", "completed", Some("failure")),
+                test_check("lint", "completed", Some("timed_out")),
+            ],
+        );
+        assert_eq!(oneline_check_summary(&status), "2 failing");
+    }
+
+    #[test]
+    fn oneline_summary_running_shows_progress() {
+        let status = test_branch_status(
+            "pending",
+            vec![
+                test_check("build", "completed", Some("success")),
+                test_check("test", "in_progress", None),
+                test_check("lint", "queued", None),
+            ],
+        );
+        assert_eq!(oneline_check_summary(&status), "1/3 running");
+    }
+
+    #[test]
+    fn oneline_summary_no_ci() {
+        let status = test_branch_status("", vec![]);
+        assert_eq!(oneline_check_summary(&status), "no CI");
+    }
+
+    #[test]
+    fn truncate_title_short_unchanged() {
+        assert_eq!(truncate_title("short", 10), "short");
+    }
+
+    #[test]
+    fn truncate_title_exact_width_unchanged() {
+        assert_eq!(truncate_title("abcde", 5), "abcde");
+    }
+
+    #[test]
+    fn truncate_title_long_gets_ellipsis() {
+        assert_eq!(truncate_title("abcdefghij", 5), "abcd…");
+    }
+
+    #[test]
+    fn truncate_title_zero_width_empty() {
+        assert_eq!(truncate_title("abc", 0), "");
+    }
+
+    #[test]
+    fn truncate_title_counts_unicode_chars() {
+        // 5 visible chars, width 5 -> unchanged
+        assert_eq!(truncate_title("café!", 5), "café!");
+    }
+
+    #[test]
+    fn oneline_row_includes_branch_pr_title_and_summary() {
+        let mut status = test_branch_status(
+            "success",
+            vec![test_check("build", "completed", Some("success"))],
+        );
+        status.pr_title = Some("Add the feature".to_string());
+        let row = oneline_row(&status, false, 10, 8, 0, 30, Some("4m"));
+        assert!(row.contains("feature")); // branch name is "feature"
+        assert!(row.contains("#123"));
+        assert!(row.contains("Add the feature"));
+        assert!(row.contains("1 checks"));
+        assert!(row.contains("4m"));
+    }
+
+    #[test]
+    fn oneline_row_truncates_long_title() {
+        let mut status = test_branch_status(
+            "success",
+            vec![test_check("build", "completed", Some("success"))],
+        );
+        status.pr_title = Some("This is a very long pull request title".to_string());
+        let row = oneline_row(&status, false, 7, 5, 0, 10, None);
+        assert!(row.contains("…"));
+        assert!(!row.contains("very long pull request title"));
+    }
+
+    #[test]
+    fn oneline_row_without_pr_omits_hash() {
+        let mut status = test_branch_status(
+            "success",
+            vec![test_check("build", "completed", Some("success"))],
+        );
+        status.pr_number = None;
+        status.pr_title = None;
+        let row = oneline_row(&status, false, 7, 0, 0, 10, None);
+        assert!(!row.contains('#'));
+    }
+
+    #[test]
+    fn oneline_row_pads_branch_to_visible_width() {
+        colored::control::set_override(false);
+        let mut status = test_branch_status(
+            "success",
+            vec![test_check("build", "completed", Some("success"))],
+        );
+        status.branch = "abc".to_string();
+        status.pr_title = Some("T".to_string());
+        let row = oneline_row(&status, false, 8, 6, 0, 10, None);
+        colored::control::unset_override();
+        // "abc" padded to width 8 = "abc" + 5 spaces
+        assert!(row.contains("abc     "));
+    }
+
+    #[test]
+    fn view_mode_single_branch_defaults_to_table() {
+        assert!(matches!(ci_view_mode(false, false, false), CiView::Table));
+    }
+
+    #[test]
+    fn view_mode_multi_branch_defaults_to_oneline() {
+        assert!(matches!(ci_view_mode(false, false, true), CiView::Oneline));
+    }
+
+    #[test]
+    fn view_mode_verbose_gives_cards_even_when_multi() {
+        assert!(matches!(ci_view_mode(false, true, true), CiView::Cards));
+    }
+
+    #[test]
+    fn view_mode_oneline_flag_forces_oneline_when_single() {
+        assert!(matches!(ci_view_mode(true, false, false), CiView::Oneline));
+    }
+
+    #[test]
+    fn review_label_draft_pr() {
+        let mut s = test_branch_status("success", vec![]);
+        s.pr_number = Some(7);
+        s.pr_is_draft = Some(true);
+        assert_eq!(oneline_review_label(&s), "draft");
+    }
+
+    #[test]
+    fn review_label_ready_pr() {
+        let mut s = test_branch_status("success", vec![]);
+        s.pr_number = Some(7);
+        s.pr_is_draft = Some(false);
+        assert_eq!(oneline_review_label(&s), "ready");
+    }
+
+    #[test]
+    fn review_label_no_pr_is_empty() {
+        let mut s = test_branch_status("success", vec![]);
+        s.pr_number = None;
+        s.pr_is_draft = None;
+        assert_eq!(oneline_review_label(&s), "");
+    }
+
+    #[test]
+    fn review_label_unknown_draft_state_is_empty() {
+        let mut s = test_branch_status("success", vec![]);
+        s.pr_number = Some(7);
+        s.pr_is_draft = None;
+        assert_eq!(oneline_review_label(&s), "");
+    }
+
+    #[test]
+    fn oneline_row_shows_draft_label() {
+        let mut status = test_branch_status(
+            "success",
+            vec![test_check("build", "completed", Some("success"))],
+        );
+        status.pr_is_draft = Some(true);
+        status.pr_title = Some("WIP feature".to_string());
+        let row = oneline_row(&status, false, 10, 6, 5, 20, None);
+        assert!(row.contains("draft"));
+    }
+
+    #[test]
+    fn oneline_row_shows_ready_label() {
+        let mut status = test_branch_status(
+            "success",
+            vec![test_check("build", "completed", Some("success"))],
+        );
+        status.pr_is_draft = Some(false);
+        status.pr_title = Some("Done".to_string());
+        let row = oneline_row(&status, false, 10, 6, 5, 20, None);
+        assert!(row.contains("ready"));
     }
 }
